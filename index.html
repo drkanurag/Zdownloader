@@ -247,6 +247,13 @@
 
       <!-- HISTORY VIEW -->
       <div id="historyContainer" class="hidden space-y-3">
+        <div class="flex items-center justify-between pb-1">
+          <p class="text-xs text-gray-400">Completed files are saved directly to your computer. Finished jobs are automatically cleared to free memory.</p>
+          <button id="clearHistoryBtn" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs font-medium text-gray-300 hover:text-white transition">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5 text-red-400"></i>
+            <span>Clear History</span>
+          </button>
+        </div>
         <div id="emptyHistoryNotice" class="text-center py-16 px-4 border border-dashed border-gray-800 rounded-2xl bg-gray-900/20">
           <div class="w-16 h-16 rounded-2xl bg-gray-800/60 border border-gray-700 flex items-center justify-center mx-auto text-gray-500 mb-4">
             <i data-lucide="clock" class="w-8 h-8"></i>
@@ -337,24 +344,37 @@
         <div>
           <div class="flex items-center justify-between mb-1">
             <label class="font-medium text-gray-300">Max Concurrent Downloads</label>
-            <span id="settingMaxConcurrentVal" class="text-xs text-indigo-400 font-mono">3</span>
+            <span id="settingMaxConcurrentVal" class="text-xs text-indigo-400 font-mono font-bold">10</span>
           </div>
           <input
             type="range"
             id="settingMaxConcurrent"
             min="1"
-            max="6"
-            value="3"
+            max="20"
+            value="10"
             class="w-full accent-indigo-500 cursor-pointer"
           />
           <div class="flex justify-between text-[10px] text-gray-500">
             <span>1</span>
-            <span>2</span>
-            <span>3</span>
-            <span>4</span>
             <span>5</span>
-            <span>6</span>
+            <span>10 (Default)</span>
+            <span>15</span>
+            <span>20</span>
           </div>
+        </div>
+
+        <!-- Auto Clear Completed Downloads Toggle -->
+        <div class="flex items-center justify-between p-3 rounded-xl bg-gray-950 border border-gray-800">
+          <div>
+            <label for="settingAutoClear" class="font-medium text-gray-200 block text-xs">Auto-Clear Completed Downloads</label>
+            <p class="text-[11px] text-gray-400">Erase finished downloads from history & memory once saved to your computer.</p>
+          </div>
+          <input
+            type="checkbox"
+            id="settingAutoClear"
+            checked
+            class="w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+          />
         </div>
 
         <!-- Agent Info -->
