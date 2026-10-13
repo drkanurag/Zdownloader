@@ -2,6 +2,13 @@
 > **Universal High-Speed Media & Video Downloader**  
 > Architected following enterprise **System Design**, **Microservices**, and **Data Structures & Algorithms (DSA)** principles.
 
+### 🌐 Live Website: [https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)
+[![Live Website](https://img.shields.io/badge/Live_App-drkanurag.github.io%2FZdownloader-6366f1?style=for-the-badge&logo=firefox&logoColor=white)](https://drkanurag.github.io/Zdownloader/)
+[![CI Status](https://img.shields.io/badge/CI_Tests-Passing-10b981?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/drkanurag/Zdownloader/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-3b82f6?style=for-the-badge)](LICENSE)
+
+> 🚀 **Quick Start:** Open the live web app at **[https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)**. When your local engine is running (`run_zdownloader.bat`), the site instantly connects, automatically inspects clipboard links, and saves videos directly to your computer at line speed!
+
 ---
 
 ## 🏛️ 1. System Design Architecture
@@ -104,7 +111,7 @@ Visit the web UI at: **`http://127.0.0.1:8765`**
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
-*(All 28 tests across DSA, System Design, Security, Persistence, and API suites pass with 100% success).*
+*(All 31 tests across DSA, System Design, Security, Persistence, and API suites pass with 100% success).*
 
 ---
 
