@@ -11,8 +11,9 @@ env/
 venv/
 ENV/
 
-# Zdownloader local history & config
+# Zdownloader local history, queue & config
 .zdownloader_history.json
+.zdownloader_queue.json
 .zdownloader_config.json
 *.zpart
 
@@ -24,6 +25,7 @@ ENV/
 build/
 dist/
 *.egg-info/
+*.zip
 
 # Local Binaries
 bin/

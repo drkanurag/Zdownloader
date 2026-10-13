@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 DEFAULT_DOWNLOAD_DIR = str(Path.home() / "Downloads" / "Zdownloader")
 HISTORY_FILE = str(Path.home() / ".zdownloader_history.json")
+QUEUE_FILE = str(Path.home() / ".zdownloader_queue.json")
 CONFIG_FILE = str(Path.home() / ".zdownloader_config.json")
 
 class AppSettings(BaseModel):

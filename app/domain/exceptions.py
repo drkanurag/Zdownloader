@@ -18,6 +18,18 @@ class DownloadCancelledException(DomainException):
     """Raised when a download job is cancelled by the user."""
     pass
 
+class DownloadPausedException(DomainException):
+    """Raised when a download job is paused by the user."""
+    pass
+
+class InsufficientDiskSpaceException(DomainException):
+    """Raised when target storage volume lacks required free space."""
+    pass
+
+class PathTraversalSecurityException(DomainException):
+    """Raised when an operation attempts to access or escape outside designated storage directories."""
+    pass
+
 class CircuitBreakerOpenException(DomainException):
     """Raised when external service calls are temporarily halted due to repeated failures."""
     pass

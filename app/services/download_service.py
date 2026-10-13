@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import asyncio
 from typing import Callable, Optional, Dict, Any
@@ -9,10 +10,15 @@ import yt_dlp
 
 from app.domain.models import DownloadJob, JobStatus
 from app.domain.events import JobProgressEvent, JobCompletedEvent, JobFailedEvent
-from app.domain.exceptions import DownloadCancelledException
+from app.domain.exceptions import (
+    DownloadCancelledException,
+    DownloadPausedException,
+    InsufficientDiskSpaceException
+)
 from app.dsa.sliding_window import SlidingWindowSpeedEstimator
 from app.dsa.token_bucket import TokenBucketRateLimiter
 from app.core.event_bus import event_bus
+from app.services.storage_service import storage_service
 from app.utils import (
     get_ffmpeg_path,
     format_bytes,
@@ -43,54 +49,100 @@ class DownloadService:
     async def download_direct(
         self,
         job: DownloadJob,
-        check_cancelled: Callable[[], bool]
+        check_cancelled: Callable[[], bool],
+        check_paused: Optional[Callable[[], bool]] = None
     ) -> str:
-        """Download direct file using chunked HTTP streaming with sliding-window speed tracking."""
+        """Download direct file using chunked HTTP streaming with HTTP Range resume and disk capacity validation."""
         target_dir = job.download_dir
         os.makedirs(target_dir, exist_ok=True)
         speed_estimator = SlidingWindowSpeedEstimator(window_seconds=2.0)
 
+        final_filepath = job.target_filepath
+        if not final_filepath:
+            parsed = urlparse(job.url)
+            base = unquote(parsed.path.split("/")[-1])
+            prelim_name = sanitize_filename(base if base else f"download_{job.id[:8]}")
+            final_filepath = os.path.join(target_dir, prelim_name)
+
+        part_filepath = final_filepath + ".zpart"
+        existing_bytes = 0
+        if os.path.exists(part_filepath):
+            existing_bytes = os.path.getsize(part_filepath)
+
+        headers = {"User-Agent": "Zdownloader/2.0"}
+        if existing_bytes > 0:
+            headers["Range"] = f"bytes={existing_bytes}-"
+
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0, verify=False) as client:
-            async with client.stream("GET", job.url) as response:
+            async with client.stream("GET", job.url, headers=headers) as response:
+                if response.status_code == 416 and existing_bytes > 0:
+                    if job.total_bytes and existing_bytes >= job.total_bytes:
+                        if os.path.exists(part_filepath):
+                            os.replace(part_filepath, final_filepath)
+                        job.downloaded_bytes = existing_bytes
+                        job.progress_percent = 100.0
+                        job.status = JobStatus.COMPLETED
+                        return final_filepath
+                    existing_bytes = 0
+                    if os.path.exists(part_filepath):
+                        os.remove(part_filepath)
+
                 response.raise_for_status()
 
-                # Extract filename
                 content_disposition = response.headers.get("content-disposition", "")
                 filename = ""
                 if "filename=" in content_disposition:
-                    import re
                     match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';\r\n]+)', content_disposition, re.IGNORECASE)
                     if match:
                         filename = unquote(match.group(1))
 
-                if not filename:
+                if not filename and not job.filename:
                     parsed = urlparse(str(response.url))
                     base = unquote(parsed.path.split("/")[-1])
                     filename = base if base else f"download_{job.id[:8]}"
 
-                filename = sanitize_filename(filename)
-                job.filename = filename
+                if filename:
+                    filename = sanitize_filename(filename)
+                    job.filename = filename
+                    final_filepath = os.path.join(target_dir, filename)
+                    part_filepath = final_filepath + ".zpart"
 
-                content_length = response.headers.get("content-length")
-                total_bytes = int(content_length) if content_length and content_length.isdigit() else None
-                job.total_bytes = total_bytes
-
-                final_filepath = os.path.join(target_dir, filename)
-                base_name, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(final_filepath):
-                    final_filepath = os.path.join(target_dir, f"{base_name} ({counter}){ext}")
-                    counter += 1
-
-                part_filepath = final_filepath + ".zpart"
                 job.target_filepath = final_filepath
 
-                downloaded = 0
+                content_range = response.headers.get("content-range")
+                if content_range and "/" in content_range:
+                    try:
+                        total_bytes = int(content_range.split("/")[-1])
+                    except Exception:
+                        total_bytes = None
+                else:
+                    content_length = response.headers.get("content-length")
+                    total_bytes = int(content_length) if content_length and content_length.isdigit() else None
+                    if response.status_code == 206 and total_bytes:
+                        total_bytes += existing_bytes
+
+                job.total_bytes = total_bytes
+
+                bytes_needed = (total_bytes - existing_bytes) if (total_bytes and total_bytes > existing_bytes) else None
+                if not storage_service.has_sufficient_space(bytes_needed):
+                    raise InsufficientDiskSpaceException(
+                        f"Insufficient disk space in {target_dir}. Free: {storage_service.get_disk_usage().get('free_str', 'N/A')}"
+                    )
+
+                if response.status_code == 206 and existing_bytes > 0:
+                    file_mode = "ab"
+                    downloaded = existing_bytes
+                else:
+                    file_mode = "wb"
+                    downloaded = 0
+
                 last_notify_time = time.time()
 
                 try:
-                    async with aiofiles.open(part_filepath, "wb") as f:
+                    async with aiofiles.open(part_filepath, file_mode) as f:
                         async for chunk in response.aiter_bytes(chunk_size=65536):
+                            if check_paused and check_paused():
+                                raise DownloadPausedException("Download paused by user.")
                             if check_cancelled():
                                 raise DownloadCancelledException("Download cancelled by user.")
 
@@ -100,11 +152,9 @@ class DownloadService:
                             await f.write(chunk)
                             downloaded += len(chunk)
 
-                            # Record in sliding window
                             speed_estimator.record(downloaded)
                             now = time.time()
 
-                            # Emit progress event every ~150ms
                             if now - last_notify_time >= 0.15:
                                 speed = speed_estimator.get_speed()
                                 eta = speed_estimator.estimate_eta(total_bytes)
@@ -132,6 +182,12 @@ class DownloadService:
                                 ))
 
                     if os.path.exists(part_filepath):
+                        if os.path.exists(final_filepath):
+                            base_n, ext_n = os.path.splitext(final_filepath)
+                            cnt = 1
+                            while os.path.exists(f"{base_n} ({cnt}){ext_n}"):
+                                cnt += 1
+                            final_filepath = f"{base_n} ({cnt}){ext_n}"
                         os.replace(part_filepath, final_filepath)
 
                     job.downloaded_bytes = downloaded
@@ -150,6 +206,11 @@ class DownloadService:
                     ))
                     return final_filepath
 
+                except DownloadPausedException:
+                    job.status = JobStatus.PAUSED
+                    job.speed_str = "Paused"
+                    job.eta_str = ""
+                    raise
                 except DownloadCancelledException:
                     if os.path.exists(part_filepath):
                         try:
@@ -158,22 +219,21 @@ class DownloadService:
                             pass
                     raise
                 except Exception as e:
-                    if os.path.exists(part_filepath):
-                        try:
-                            os.remove(part_filepath)
-                        except Exception:
-                            pass
                     raise e
 
     def _download_ytdlp_sync(
         self,
         job: DownloadJob,
         loop: asyncio.AbstractEventLoop,
-        check_cancelled: Callable[[], bool]
+        check_cancelled: Callable[[], bool],
+        check_paused: Optional[Callable[[], bool]] = None
     ) -> str:
-        """Run yt-dlp synchronously with hooks and sliding window speed estimation."""
+        """Run yt-dlp synchronously with hooks, sliding window speed estimation, and disk space validation."""
         target_dir = job.download_dir
         os.makedirs(target_dir, exist_ok=True)
+        if not storage_service.has_sufficient_space():
+            raise InsufficientDiskSpaceException(f"Insufficient disk space in download directory: {storage_service.base_dir}")
+
         ffmpeg_exe = get_ffmpeg_path()
         speed_estimator = SlidingWindowSpeedEstimator(window_seconds=2.0)
 
@@ -182,6 +242,8 @@ class DownloadService:
         last_update = [0.0]
 
         def ytdlp_progress_hook(d: Dict[str, Any]):
+            if check_paused and check_paused():
+                raise DownloadPausedException("Download paused by user.")
             if check_cancelled():
                 raise DownloadCancelledException("Download cancelled by user.")
 
@@ -257,6 +319,8 @@ class DownloadService:
                 )
 
         def postprocessor_hook(d: Dict[str, Any]):
+            if check_paused and check_paused():
+                raise DownloadPausedException("Download paused by user.")
             if check_cancelled():
                 raise DownloadCancelledException("Download cancelled by user.")
             if d.get("status") == "started":
@@ -288,7 +352,6 @@ class DownloadService:
         if ffmpeg_exe:
             ydl_opts["ffmpeg_location"] = ffmpeg_exe
 
-        # Format selection logic: Only extract audio if explicitly requested as audio-only
         format_id = job.format_id or "best"
         is_audio_only = (
             format_id == "bestaudio/best"
@@ -331,7 +394,6 @@ class DownloadService:
                     calc_filename = os.path.splitext(calc_filename)[0] + ".mp4"
                 final_file[0] = calc_filename
 
-        # If file path extension changed during merging (e.g., .webm remuxed to .mp4 or .fXXX stripped)
         if final_file[0] and not os.path.exists(final_file[0]):
             base_cand = re.sub(r'\.f\d+$', '', os.path.splitext(final_file[0])[0])
             for ext_cand in [".mp4", ".mkv", ".webm", ".mp3", ".m4a"]:
@@ -340,7 +402,6 @@ class DownloadService:
                     final_file[0] = cand_path
                     break
 
-        # Fallback search in target directory
         if not final_file[0] or not os.path.exists(final_file[0]):
             try:
                 candidates = [
@@ -376,10 +437,11 @@ class DownloadService:
     async def download_ytdlp(
         self,
         job: DownloadJob,
-        check_cancelled: Callable[[], bool]
+        check_cancelled: Callable[[], bool],
+        check_paused: Optional[Callable[[], bool]] = None
     ) -> str:
         loop = asyncio.get_running_loop()
-        return await asyncio.to_thread(self._download_ytdlp_sync, job, loop, check_cancelled)
+        return await asyncio.to_thread(self._download_ytdlp_sync, job, loop, check_cancelled, check_paused)
 
 download_service = DownloadService()
 

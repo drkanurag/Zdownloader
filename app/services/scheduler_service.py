@@ -6,10 +6,10 @@ import asyncio
 from typing import Dict, List, Optional
 from app.domain.models import DownloadJob, JobStatus, JobPriority
 from app.domain.events import JobCreatedEvent, JobProgressEvent, JobCompletedEvent, JobFailedEvent, JobCancelledEvent
-from app.domain.exceptions import DownloadCancelledException
+from app.domain.exceptions import DownloadCancelledException, DownloadPausedException
 from app.dsa.priority_queue import PriorityQueue
 from app.core.event_bus import event_bus
-from app.config import AppSettings, HISTORY_FILE
+from app.config import AppSettings, HISTORY_FILE, QUEUE_FILE
 from app.services.download_service import download_service
 from app.services.inspection_service import inspection_service
 
@@ -20,18 +20,23 @@ class SchedulerService:
     Features:
       - Binary Min-Heap based Priority Queue for O(log N) scheduling
       - Worker pool with concurrency limits and semaphore control
+      - Persistent queue state across application restarts (.zdownloader_queue.json)
+      - Pause & Resumable job flow integration
       - EventBus pub/sub integration
-      - Persistent history
+      - Persistent download history
     """
     def __init__(self, settings: AppSettings):
         self.settings = settings
         self.jobs: Dict[str, DownloadJob] = {}
         self.queue: PriorityQueue[DownloadJob] = PriorityQueue()
         self.cancelled_job_ids: set[str] = set()
+        self.paused_job_ids: set[str] = set()
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
         self.workers: List[asyncio.Task] = []
+        self._pending_startup_jobs: List[DownloadJob] = []
         self._is_running = False
         self._load_history()
+        self._load_queue()
 
     def _load_history(self):
         if os.path.exists(HISTORY_FILE):
@@ -55,19 +60,58 @@ class SchedulerService:
         except Exception as e:
             print(f"Error saving download history: {e}")
 
+    def _load_queue(self):
+        """Restore active and paused download tasks from previous session."""
+        if os.path.exists(QUEUE_FILE):
+            try:
+                with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for item in data:
+                        job = DownloadJob(**item)
+                        self.jobs[job.id] = job
+                        if job.status in (JobStatus.QUEUED, JobStatus.DOWNLOADING):
+                            job.status = JobStatus.QUEUED
+                            job.speed_str = ""
+                            job.eta_str = ""
+                            self._pending_startup_jobs.append(job)
+                        elif job.status == JobStatus.PAUSED:
+                            self.paused_job_ids.add(job.id)
+            except Exception as e:
+                print(f"Error loading download queue: {e}")
+
+    def _save_queue(self):
+        """Persist active, pending, and paused jobs to prevent data loss on restarts."""
+        try:
+            records = [
+                job.model_dump() for job in self.jobs.values()
+                if job.status in (JobStatus.QUEUED, JobStatus.DOWNLOADING, JobStatus.PAUSED)
+            ]
+            with open(QUEUE_FILE, "w", encoding="utf-8") as f:
+                json.dump(records, f, indent=2)
+        except Exception as e:
+            print(f"Error saving download queue: {e}")
+
     async def start(self):
-        """Start worker pool consumers."""
+        """Start worker pool consumers and restore persisted pending jobs."""
         if self._is_running:
             return
         self._is_running = True
+
+        # Re-enqueue jobs preserved from disk
+        if self._pending_startup_jobs:
+            for job in self._pending_startup_jobs:
+                await self.queue.push(job.id, job, priority=job.priority)
+            self._pending_startup_jobs.clear()
+
         # Spawn worker tasks matching concurrency capacity
         for _ in range(self.settings.max_concurrent_downloads):
             worker = asyncio.create_task(self._worker_loop())
             self.workers.append(worker)
 
     async def stop(self):
-        """Gracefully stop worker pool."""
+        """Gracefully stop worker pool and persist state."""
         self._is_running = False
+        self._save_queue()
         for worker in self.workers:
             worker.cancel()
         self.workers.clear()
@@ -79,6 +123,11 @@ class SchedulerService:
                 job_id, job = await self.queue.pop()
                 if job.id in self.cancelled_job_ids:
                     job.status = JobStatus.CANCELLED
+                    self._save_queue()
+                    continue
+                if job.id in self.paused_job_ids:
+                    job.status = JobStatus.PAUSED
+                    self._save_queue()
                     continue
 
                 async with self.semaphore:
@@ -92,14 +141,19 @@ class SchedulerService:
 
     async def _execute_job(self, job: DownloadJob):
         job.status = JobStatus.DOWNLOADING
+        self._save_queue()
+
         def check_cancelled() -> bool:
             return job.id in self.cancelled_job_ids
 
+        def check_paused() -> bool:
+            return job.id in self.paused_job_ids
+
         try:
             if job.format_id == "direct" or inspection_service.is_direct_file_url(job.url):
-                filepath = await download_service.download_direct(job, check_cancelled)
+                filepath = await download_service.download_direct(job, check_cancelled, check_paused)
             else:
-                filepath = await download_service.download_ytdlp(job, check_cancelled)
+                filepath = await download_service.download_ytdlp(job, check_cancelled, check_paused)
 
             job.status = JobStatus.COMPLETED
             job.completed_at = time.time()
@@ -107,19 +161,41 @@ class SchedulerService:
             if filepath:
                 job.filename = os.path.basename(filepath)
             job.progress_percent = 100.0
+            self._save_queue()
             self._save_history()
+
+        except DownloadPausedException:
+            job.status = JobStatus.PAUSED
+            job.speed_str = "Paused"
+            job.eta_str = ""
+            self._save_queue()
+            await event_bus.publish(JobProgressEvent(
+                event_id=f"paused-{job.id}",
+                event_type="job_progress",
+                job_id=job.id,
+                status=JobStatus.PAUSED.value,
+                progress_percent=job.progress_percent,
+                downloaded_bytes=job.downloaded_bytes,
+                total_bytes=job.total_bytes,
+                speed_str="Paused",
+                eta_str=""
+            ))
 
         except DownloadCancelledException:
             job.status = JobStatus.CANCELLED
             job.error_message = "Cancelled by user"
+            self._save_queue()
+            self._save_history()
             await event_bus.publish(JobCancelledEvent(
                 event_id=f"canc-{job.id}",
                 event_type="job_cancelled",
                 job_id=job.id
             ))
+
         except Exception as e:
             job.status = JobStatus.FAILED
             job.error_message = str(e)
+            self._save_queue()
             self._save_history()
             await event_bus.publish(JobFailedEvent(
                 event_id=f"fail-{job.id}",
@@ -153,8 +229,12 @@ class SchedulerService:
             created_at=time.time()
         )
         self.jobs[job_id] = job
+        self.cancelled_job_ids.discard(job_id)
+        self.paused_job_ids.discard(job_id)
+
         # Push into O(log N) Priority Queue
         await self.queue.push(job_id, job, priority=priority)
+        self._save_queue()
 
         await event_bus.publish(JobCreatedEvent(
             event_id=f"created-{job_id}",
@@ -162,6 +242,61 @@ class SchedulerService:
             job_id=job_id,
             url=url,
             title=job.title
+        ))
+        return job
+
+    async def pause_job(self, job_id: str) -> bool:
+        """Pause an active or queued job."""
+        if job_id not in self.jobs:
+            return False
+        job = self.jobs[job_id]
+        if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            return False
+
+        self.paused_job_ids.add(job_id)
+        job.status = JobStatus.PAUSED
+        job.speed_str = "Paused"
+        job.eta_str = ""
+        await self.queue.remove(job_id)
+        self._save_queue()
+
+        await event_bus.publish(JobProgressEvent(
+            event_id=f"pause-{job_id}",
+            event_type="job_progress",
+            job_id=job_id,
+            status=JobStatus.PAUSED.value,
+            progress_percent=job.progress_percent,
+            downloaded_bytes=job.downloaded_bytes,
+            total_bytes=job.total_bytes,
+            speed_str="Paused",
+            eta_str=""
+        ))
+        return True
+
+    async def resume_job(self, job_id: str) -> Optional[DownloadJob]:
+        """Resume a paused or interrupted job."""
+        if job_id not in self.jobs:
+            return None
+        job = self.jobs[job_id]
+        self.paused_job_ids.discard(job_id)
+        self.cancelled_job_ids.discard(job_id)
+        job.status = JobStatus.QUEUED
+        job.speed_str = "Resuming..."
+        job.error_message = None
+
+        await self.queue.push(job_id, job, priority=job.priority)
+        self._save_queue()
+
+        await event_bus.publish(JobProgressEvent(
+            event_id=f"resume-{job_id}",
+            event_type="job_progress",
+            job_id=job_id,
+            status=JobStatus.QUEUED.value,
+            progress_percent=job.progress_percent,
+            downloaded_bytes=job.downloaded_bytes,
+            total_bytes=job.total_bytes,
+            speed_str="In Queue",
+            eta_str=""
         ))
         return job
 
@@ -173,9 +308,11 @@ class SchedulerService:
             return False
 
         self.cancelled_job_ids.add(job_id)
+        self.paused_job_ids.discard(job_id)
         job.status = JobStatus.CANCELLED
         job.error_message = "Cancelled by user"
         await self.queue.remove(job_id)
+        self._save_queue()
 
         await event_bus.publish(JobCancelledEvent(
             event_id=f"canc-{job_id}",
@@ -189,6 +326,7 @@ class SchedulerService:
             return None
         job = self.jobs[job_id]
         self.cancelled_job_ids.discard(job_id)
+        self.paused_job_ids.discard(job_id)
         job.status = JobStatus.QUEUED
         job.progress_percent = 0.0
         job.downloaded_bytes = 0
@@ -197,12 +335,15 @@ class SchedulerService:
         job.eta_str = ""
 
         await self.queue.push(job_id, job, priority=job.priority)
+        self._save_queue()
         return job
 
     def remove_job(self, job_id: str) -> bool:
         if job_id in self.jobs:
             del self.jobs[job_id]
             self.cancelled_job_ids.discard(job_id)
+            self.paused_job_ids.discard(job_id)
+            self._save_queue()
             self._save_history()
             return True
         return False

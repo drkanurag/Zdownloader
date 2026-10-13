@@ -742,6 +742,9 @@ function updateJobCardDOM(card, job) {
     if (job.status === 'downloading') {
       badgeClass = 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
       statusLabel = 'Downloading Video';
+    } else if (job.status === 'paused') {
+      badgeClass = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+      statusLabel = 'Paused';
     } else if (job.status === 'merging') {
       badgeClass = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
       statusLabel = 'Merging Streams';
@@ -760,14 +763,14 @@ function updateJobCardDOM(card, job) {
     statusBadge.textContent = statusLabel;
   }
 
-  if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
+  if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled' || job.status === 'paused') {
     renderJobs();
   }
 }
 
 function renderJobs() {
   const allJobs = Array.from(jobs.values()).sort((a, b) => b.created_at - a.created_at);
-  const activeJobs = allJobs.filter(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'merging');
+  const activeJobs = allJobs.filter(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'merging' || j.status === 'paused');
   const historyJobs = allJobs.filter(j => j.status === 'completed' || j.status === 'error' || j.status === 'cancelled');
 
   activeCountBadge.textContent = activeJobs.length;
@@ -814,6 +817,9 @@ function createJobCardHtml(job, isHistory) {
   if (job.status === 'downloading') {
     statusBadgeClass = 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
     statusText = 'Downloading Video';
+  } else if (job.status === 'paused') {
+    statusBadgeClass = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+    statusText = 'Paused';
   } else if (job.status === 'merging') {
     statusBadgeClass = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
     statusText = 'Merging Audio & Video';
@@ -829,7 +835,25 @@ function createJobCardHtml(job, isHistory) {
   }
 
   let actionsHtml = '';
-  if (job.status === 'downloading' || job.status === 'queued' || job.status === 'merging') {
+  if (job.status === 'downloading' || job.status === 'queued') {
+    actionsHtml = `
+      <button class="job-pause-btn p-2 rounded-lg text-gray-400 hover:text-amber-400 hover:bg-gray-800 transition" data-id="${job.id}" title="Pause Download">
+        <i data-lucide="pause" class="w-4 h-4"></i>
+      </button>
+      <button class="job-cancel-btn p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition" data-id="${job.id}" title="Cancel Download">
+        <i data-lucide="x-circle" class="w-4 h-4"></i>
+      </button>
+    `;
+  } else if (job.status === 'paused') {
+    actionsHtml = `
+      <button class="job-resume-btn p-2 rounded-lg text-gray-400 hover:text-emerald-400 hover:bg-gray-800 transition" data-id="${job.id}" title="Resume Download">
+        <i data-lucide="play" class="w-4 h-4"></i>
+      </button>
+      <button class="job-cancel-btn p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition" data-id="${job.id}" title="Cancel Download">
+        <i data-lucide="x-circle" class="w-4 h-4"></i>
+      </button>
+    `;
+  } else if (job.status === 'merging') {
     actionsHtml = `
       <button class="job-cancel-btn p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition" data-id="${job.id}" title="Cancel Download">
         <i data-lucide="x-circle" class="w-4 h-4"></i>
@@ -931,6 +955,20 @@ function switchTab(tab) {
 
 // Active Queue Actions Delegation
 jobsList.addEventListener('click', async (e) => {
+  const pauseBtn = e.target.closest('.job-pause-btn');
+  if (pauseBtn) {
+    const jobId = pauseBtn.dataset.id;
+    await fetch(`${API_BASE}/api/jobs/${jobId}/pause`, { method: 'POST' });
+    return;
+  }
+
+  const resumeBtn = e.target.closest('.job-resume-btn');
+  if (resumeBtn) {
+    const jobId = resumeBtn.dataset.id;
+    await fetch(`${API_BASE}/api/jobs/${jobId}/resume`, { method: 'POST' });
+    return;
+  }
+
   const cancelBtn = e.target.closest('.job-cancel-btn');
   if (cancelBtn) {
     const jobId = cancelBtn.dataset.id;

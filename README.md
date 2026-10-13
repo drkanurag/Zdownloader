@@ -45,13 +45,17 @@
 ### Key System Design Patterns
 1. **SSRF & DNS Rebinding Defense**:
    - Every input URL is validated against RFC 1918 private IPv4/IPv6 networks, loopback addresses (`127.0.0.1`), link-local IPs, and cloud metadata endpoints (`169.254.169.254`).
-2. **Circuit Breaker Pattern**:
+2. **Path Traversal Sandbox & Origin Security**:
+   - Every file access is strictly bound to the authorized download directory using path normalization and canonical boundary checks (`is_safe_path`).
+   - CORS is locked down to authorized local origins and the official GitHub Pages deployment domain, preventing drive-by attacks from arbitrary websites.
+3. **HTTP Range & Transactional Streaming**:
+   - Supports HTTP `Range: bytes=X-` headers and `206 Partial Content` for resumable downloads. Interrupted or paused downloads seamlessly resume from existing `.zpart` buffers.
+4. **Persistent Queue State Across Restarts**:
+   - Preserves pending, downloading, and paused jobs in `.zdownloader_queue.json`, restoring them seamlessly across app or daemon restarts.
+5. **Circuit Breaker Pattern**:
    - Prevents downstream resource exhaustion when external media platforms experience transient outages or rate limits. Automatically shifts between `CLOSED`, `OPEN`, and `HALF_OPEN`.
-3. **Structured Observability**:
-   - Every incoming request and background task is tagged with an `X-Correlation-ID` header.
-   - Standardized JSON structured logs for distributed tracing.
-4. **Resilient Transactional Streaming**:
-   - Files are written to `.zpart` temporary buffers during chunked ingestion and atomically swapped upon completion, preventing corrupted partial files.
+6. **Structured Observability**:
+   - Every incoming request and background task is tagged with an `X-Correlation-ID` header. Standardized JSON structured logs for distributed tracing.
 
 ---
 
@@ -62,9 +66,10 @@ The system is decomposed into loosely-coupled, highly-cohesive domain services:
 | Microservice | Bounded Context | Responsibilities |
 |---|---|---|
 | **Inspection Service** | `app.services.inspection_service` | Link validation, SSRF checks, LRU metadata caching, Trie-based domain categorization, yt-dlp probing |
-| **Scheduler Service** | `app.services.scheduler_service` | Binary Min-Heap priority scheduling, worker pool orchestration, job state management |
-| **Download Service** | `app.services.download_service` | Chunked HTTP streaming, bandwidth traffic shaping, sliding-window speed calculation, FFmpeg audio/video remuxing |
-| **Storage Service** | `app.services.storage_service` | Local filesystem isolation, safe filename sanitization, disk usage reporting, native Explorer integration |
+| **Scheduler Service** | `app.services.scheduler_service` | Binary Min-Heap priority scheduling, persistent queue state, pause/resume flow, worker pool orchestration |
+| **Download Service** | `app.services.download_service` | Chunked HTTP streaming with HTTP Range resume, bandwidth traffic shaping, sliding-window speed calculation, FFmpeg audio/video remuxing |
+| **Storage Service** | `app.services.storage_service` | Local filesystem isolation, path traversal guards, disk capacity verification, safe filename sanitization, native Explorer integration |
+| **Clipboard Service** | `app.services.clipboard_service` | Background monitoring of native Windows clipboard with automatic URL parsing and deduplication |
 | **Event Bus** | `app.core.event_bus` | Asynchronous Pub/Sub domain event broker (`JobCreatedEvent`, `JobProgressEvent`, `JobCompletedEvent`, `JobFailedEvent`) |
 
 ---
@@ -97,67 +102,30 @@ Visit the web UI at: **`http://127.0.0.1:8765`**
 
 ### Running the Test Suite
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
-*(All 22 tests across DSA, System Design, Security, and API suites pass with 100% success).*
+*(All 28 tests across DSA, System Design, Security, Persistence, and API suites pass with 100% success).*
 
 ---
 
 ## 🌐 4. Live Website & Deployment on GitHub
 
-Zdownloader is built as a **hybrid cloud-and-edge platform** (similar to JDownloader Web and WebTorrent). Anyone can access and use the live website directly from GitHub!
+Zdownloader is accessible live on GitHub Pages:
+👉 **[https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)**
 
-### 🌍 Accessing the Live Website
-Once pushed to your GitHub repository, the live site is immediately available at:
-```
-https://<your-username>.github.io/<your-repository>/
-```
+### ⚡ How to Use the Live Site with Your PC
 
-### ⚡ 3 Ways to Use Zdownloader
-
-#### Mode 1: Live GitHub Website + Local Engine (Recommended)
-1. Open the live website: `https://<your-username>.github.io/<your-repository>/`
+1. Open **[https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)** in any browser.
 2. Run the local engine on your PC:
    ```powershell
    .\run_zdownloader.bat
    ```
-   *(Or on Linux/Mac: `python start.py`)*
 3. The live website automatically detects your engine and turns **Agent Connected** (emerald green).
 4. Videos download at maximum local line speed directly into your computer's `Downloads/Zdownloader` folder with lossless audio/video remuxing.
 
-#### Mode 2: 1-Click Free Cloud Backend (Docker / Render)
-Deploy the full engine to the cloud for free so anyone can use it without running anything locally:
-* **Deploy to Render:** Fork this repository, create a new Web Service on [Render.com](https://render.com), connect your repo, and Render will automatically detect [`render.yaml`](file:///c:/Users/anura/OneDrive%20-%20Manipal%20Academy%20of%20Higher%20Education/Desktop/Zdownloader/render.yaml) and [`Dockerfile`](file:///c:/Users/anura/OneDrive%20-%20Manipal%20Academy%20of%20Higher%20Education/Desktop/Zdownloader/Dockerfile).
-* **Connect in Web UI:** Open the live website, click **Settings (⚙️)**, paste your Render URL (e.g., `https://zdownloader-engine.onrender.com`), and click **Save Settings**.
-
-#### Mode 3: Standalone Local Web Interface
-Run `.\run_zdownloader.bat` and visit `http://127.0.0.1:8765`.
-
 ---
 
-## 📤 5. Publishing to GitHub (Step-by-Step)
+## 📄 License
 
-To publish this project and activate your live GitHub website:
-
-1. **Create a new empty repository on GitHub**:
-   - Go to [github.com/new](https://github.com/new)
-   - Repository name: `Zdownloader` (or any name you like)
-   - Set to **Public**
-   - Do **not** initialize with README or .gitignore (we already have them)
-
-2. **Push the codebase from your terminal**:
-   ```bash
-   git add .
-   git commit -m "feat: initial commit - universal video downloader with live GitHub Pages"
-   git branch -M main
-   git remote add origin https://github.com/<YOUR-USERNAME>/<YOUR-REPO-NAME>.git
-   git push -u origin main
-   ```
-
-3. **Activate GitHub Pages**:
-   - In your GitHub repo, go to **Settings** > **Pages**.
-   - Under **Build and deployment** > **Source**:
-     - Choose **GitHub Actions** (the automated [`deploy.yml`](file:///c:/Users/anura/OneDrive%20-%20Manipal%20Academy%20of%20Higher%20Education/Desktop/Zdownloader/.github/workflows/deploy.yml) workflow will test and publish your live website automatically!).
-     - *Or* choose **Deploy from a branch** -> branch `main` -> folder `/docs`.
-   - Your website is now live for the entire world at `https://<your-username>.github.io/<your-repo-name>/`!
+This project is licensed under the [MIT License](LICENSE).
 

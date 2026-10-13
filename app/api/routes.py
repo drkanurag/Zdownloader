@@ -111,6 +111,20 @@ async def get_jobs():
     jobs = scheduler_service.get_all_jobs()
     return {"jobs": [j.model_dump() for j in jobs]}
 
+@router.post("/api/jobs/{job_id}/pause", tags=["Downloads"])
+async def pause_job(job_id: str):
+    success = await scheduler_service.pause_job(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Job not found or cannot be paused")
+    return {"status": "paused", "job_id": job_id}
+
+@router.post("/api/jobs/{job_id}/resume", tags=["Downloads"])
+async def resume_job(job_id: str):
+    job = await scheduler_service.resume_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "resumed", "job": job.model_dump()}
+
 @router.post("/api/jobs/{job_id}/cancel", tags=["Downloads"])
 async def cancel_job(job_id: str):
     success = await scheduler_service.cancel_job(job_id)
@@ -150,8 +164,14 @@ async def open_downloaded_file(payload: Dict[str, Any]):
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Target file does not exist on disk")
 
-    success = storage_service.open_file(path)
-    return {"success": success, "path": path}
+    if not storage_service.is_safe_path(path):
+        raise HTTPException(status_code=403, detail="Security violation: Target file is outside authorized download directory")
+
+    try:
+        success = storage_service.open_file(path)
+        return {"success": success, "path": path}
+    except Exception as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 @router.get("/api/storage/disk-usage", tags=["Storage"])
 async def get_disk_usage():

@@ -46,10 +46,33 @@ async def correlation_id_middleware(request: Request, call_next):
     response.headers["X-Correlation-ID"] = trace_id
     return response
 
-# CORS
+# Security Headers Middleware
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+# Restrict CORS to authorized origins only (Localhost, 127.0.0.1, and official GitHub Pages deployment)
+ALLOWED_ORIGINS = [
+    "https://drkanurag.github.io",
+    "http://127.0.0.1:8765",
+    "http://localhost:8765",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://127.0.0.1:8080",
+    "http://localhost:8080",
+    "null"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://drkanurag\.github\.io$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

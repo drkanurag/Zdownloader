@@ -6,6 +6,7 @@ class JobStatus(str, Enum):
     QUEUED = "queued"
     ANALYZING = "analyzing"
     DOWNLOADING = "downloading"
+    PAUSED = "paused"
     MERGING = "merging"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
