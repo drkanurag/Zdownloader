@@ -174,11 +174,14 @@ async def open_downloaded_file(payload: Dict[str, Any]):
     if job_id and job_id in scheduler_service.jobs:
         path = scheduler_service.jobs[job_id].target_filepath
 
-    if not path or not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Target file does not exist on disk")
+    if not path:
+        raise HTTPException(status_code=400, detail="Target path is required")
 
     if not storage_service.is_safe_path(path):
         raise HTTPException(status_code=403, detail="Security violation: Target file is outside authorized download directory")
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Target file does not exist on disk")
 
     try:
         success = storage_service.open_file(path)

@@ -47,7 +47,7 @@ class TestSecurityResilienceAndPersistence(unittest.IsolatedAsyncioTestCase):
         """Verify that API endpoint /api/open-file rejects path traversal with HTTP 403."""
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            res = await client.post("/api/open-file", json={"path": "C:\\Windows\\System32\\notepad.exe"})
+            res = await client.post("/api/open-file", json={"path": "../../secret.txt"})
             self.assertEqual(res.status_code, 403)
             self.assertIn("Security violation", res.json()["detail"])
 
