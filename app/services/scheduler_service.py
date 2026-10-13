@@ -45,16 +45,26 @@ class SchedulerService:
                     data = json.load(f)
                     for item in data:
                         job = DownloadJob(**item)
+                        # If auto_clear_completed is enabled, discard completed jobs to free memory
+                        if self.settings.auto_clear_completed and job.status == JobStatus.COMPLETED:
+                            continue
                         self.jobs[job.id] = job
             except Exception as e:
                 print(f"Error loading download history: {e}")
 
     def _save_history(self):
         try:
-            records = [
-                job.model_dump() for job in self.jobs.values()
-                if job.status in (JobStatus.COMPLETED, JobStatus.FAILED)
-            ][-100:]
+            if self.settings.auto_clear_completed:
+                # Do not write completed records to history file to minimize memory and disk usage
+                records = [
+                    job.model_dump() for job in self.jobs.values()
+                    if job.status == JobStatus.FAILED
+                ][-50:]
+            else:
+                records = [
+                    job.model_dump() for job in self.jobs.values()
+                    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED)
+                ][-100:]
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(records, f, indent=2)
         except Exception as e:
@@ -161,8 +171,22 @@ class SchedulerService:
             if filepath:
                 job.filename = os.path.basename(filepath)
             job.progress_percent = 100.0
-            self._save_queue()
-            self._save_history()
+
+            await event_bus.publish(JobCompletedEvent(
+                event_id=f"done-{job.id}",
+                event_type="job_completed",
+                job_id=job.id,
+                filepath=filepath or "",
+                filename=job.filename or "",
+                total_bytes=job.downloaded_bytes
+            ))
+
+            if self.settings.auto_clear_completed:
+                # Erase completed job from memory and disk history once finished on computer
+                asyncio.create_task(self._delayed_purge_completed_job(job.id, delay_seconds=1.0))
+            else:
+                self._save_queue()
+                self._save_history()
 
         except DownloadPausedException:
             job.status = JobStatus.PAUSED
@@ -347,6 +371,52 @@ class SchedulerService:
             self._save_history()
             return True
         return False
+
+    async def _delayed_purge_completed_job(self, job_id: str, delay_seconds: float = 1.0):
+        """Erase completed job from memory and persistence once safely written to disk."""
+        try:
+            await asyncio.sleep(delay_seconds)
+            if job_id in self.jobs and self.jobs[job_id].status == JobStatus.COMPLETED:
+                del self.jobs[job_id]
+                self.cancelled_job_ids.discard(job_id)
+                self.paused_job_ids.discard(job_id)
+                self._save_queue()
+                self._save_history()
+        except Exception as e:
+            print(f"Error purging completed job {job_id}: {e}")
+
+    def clear_history(self) -> int:
+        """Clear all finished or cancelled jobs to reclaim memory."""
+        to_delete = [
+            jid for jid, j in self.jobs.items()
+            if j.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+        ]
+        for jid in to_delete:
+            del self.jobs[jid]
+            self.cancelled_job_ids.discard(jid)
+            self.paused_job_ids.discard(jid)
+
+        self._save_history()
+        self._save_queue()
+        return len(to_delete)
+
+    def update_concurrency(self, new_limit: int):
+        """Dynamically adjust worker pool concurrency and semaphore."""
+        if new_limit < 1:
+            new_limit = 1
+        self.settings.max_concurrent_downloads = new_limit
+        self.semaphore = asyncio.Semaphore(new_limit)
+        if self._is_running:
+            diff = new_limit - len(self.workers)
+            if diff > 0:
+                for _ in range(diff):
+                    worker = asyncio.create_task(self._worker_loop())
+                    self.workers.append(worker)
+            elif diff < 0:
+                for _ in range(abs(diff)):
+                    if self.workers:
+                        w = self.workers.pop()
+                        w.cancel()
 
     def get_all_jobs(self) -> List[DownloadJob]:
         return sorted(self.jobs.values(), key=lambda j: j.created_at, reverse=True)

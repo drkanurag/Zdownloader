@@ -34,5 +34,6 @@ class EnqueueDownloadsRequest(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     download_dir: Optional[str] = None
     max_concurrent_downloads: Optional[int] = None
+    auto_clear_completed: Optional[bool] = None
     default_quality: Optional[str] = None
 

@@ -52,6 +52,7 @@ let appSettings = null;
 let socket = null;
 let reconnectTimer = null;
 let clipboardMonitorEnabled = true;
+let autoClearCompleted = true;
 
 // DOM Elements
 const urlInput = document.getElementById('urlInput');
@@ -77,6 +78,7 @@ const emptyHistoryNotice = document.getElementById('emptyHistoryNotice');
 const activeCountBadge = document.getElementById('activeCountBadge');
 const historyCountBadge = document.getElementById('historyCountBadge');
 const clearCompletedBtn = document.getElementById('clearCompletedBtn');
+const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
 const agentStatusDot = document.getElementById('agentStatusDot');
 const agentStatusPing = document.getElementById('agentStatusPing');
@@ -104,6 +106,7 @@ const settingDownloadDir = document.getElementById('settingDownloadDir');
 const settingDefaultQuality = document.getElementById('settingDefaultQuality');
 const settingMaxConcurrent = document.getElementById('settingMaxConcurrent');
 const settingMaxConcurrentVal = document.getElementById('settingMaxConcurrentVal');
+const settingAutoClear = document.getElementById('settingAutoClear');
 const settingFfmpegPath = document.getElementById('settingFfmpegPath');
 const settingOpenFolderBtn = document.getElementById('settingOpenFolderBtn');
 
@@ -439,7 +442,11 @@ async function fetchJobs() {
     const data = await res.json();
     if (data.jobs) {
       jobs.clear();
-      data.jobs.forEach(job => jobs.set(job.id, job));
+      data.jobs.forEach(job => {
+        // Discard completed jobs from frontend cache if autoClearCompleted is true
+        if (autoClearCompleted && job.status === 'completed') return;
+        jobs.set(job.id, job);
+      });
       renderJobs();
     }
   } catch (err) {
@@ -460,8 +467,12 @@ async function fetchSettings() {
     appSettings = await res.json();
     settingDownloadDir.value = appSettings.download_dir || '';
     settingDefaultQuality.value = appSettings.default_quality || 'highest';
-    settingMaxConcurrent.value = appSettings.max_concurrent_downloads || 3;
-    settingMaxConcurrentVal.textContent = appSettings.max_concurrent_downloads || 3;
+    settingMaxConcurrent.value = appSettings.max_concurrent_downloads || 10;
+    settingMaxConcurrentVal.textContent = appSettings.max_concurrent_downloads || 10;
+    if (settingAutoClear) {
+      settingAutoClear.checked = appSettings.auto_clear_completed !== false;
+      autoClearCompleted = settingAutoClear.checked;
+    }
   } catch (err) {
     console.error('Error fetching settings:', err);
   }
@@ -478,8 +489,10 @@ async function saveSettings() {
   const payload = {
     download_dir: settingDownloadDir.value.trim(),
     default_quality: settingDefaultQuality.value,
-    max_concurrent_downloads: parseInt(settingMaxConcurrent.value, 10)
+    max_concurrent_downloads: parseInt(settingMaxConcurrent.value, 10),
+    auto_clear_completed: settingAutoClear ? settingAutoClear.checked : true
   };
+  autoClearCompleted = payload.auto_clear_completed;
   try {
     const res = await fetch(`${API_BASE}/api/settings`, {
       method: 'POST',
@@ -489,6 +502,13 @@ async function saveSettings() {
     if (res.ok) {
       settingsModal.classList.add('hidden');
       fetchStatus();
+      if (autoClearCompleted) {
+        // Erase any completed jobs currently in memory
+        for (const [id, j] of jobs.entries()) {
+          if (j.status === 'completed') jobs.delete(id);
+        }
+        renderJobs();
+      }
     }
   } catch (err) {
     // If backend is remote/offline, still close settings since local API_BASE was saved
@@ -703,7 +723,39 @@ async function enqueueDownloadBatch(items) {
 // JOBS & QUEUE MANAGEMENT
 // -------------------------------------------------------------
 function handleJobUpdate(updatedJob) {
+  const existing = jobs.get(updatedJob.id);
   jobs.set(updatedJob.id, updatedJob);
+
+  if (updatedJob.status === 'completed' && (!existing || existing.status !== 'completed')) {
+    showToast(
+      '✓ Download Complete',
+      `${updatedJob.filename || updatedJob.title} saved to your computer`,
+      [
+        {
+          label: 'Show File',
+          onClick: () => triggerOpenFile(updatedJob.id, updatedJob.target_filepath)
+        }
+      ]
+    );
+
+    if (autoClearCompleted) {
+      setTimeout(() => {
+        const cardElem = document.getElementById(`job-card-${updatedJob.id}`);
+        if (cardElem) {
+          cardElem.style.transition = 'all 0.5s ease';
+          cardElem.style.opacity = '0';
+          cardElem.style.transform = 'translateY(-10px)';
+          setTimeout(() => {
+            jobs.delete(updatedJob.id);
+            renderJobs();
+          }, 500);
+        } else {
+          jobs.delete(updatedJob.id);
+          renderJobs();
+        }
+      }, 1500);
+    }
+  }
 
   const cardElem = document.getElementById(`job-card-${updatedJob.id}`);
   if (cardElem) {
@@ -1135,17 +1187,36 @@ clipboardToggleBtn.addEventListener('click', toggleClipboardMonitor);
 tabActiveBtn.addEventListener('click', () => switchTab('active'));
 tabHistoryBtn.addEventListener('click', () => switchTab('history'));
 
-clearCompletedBtn.addEventListener('click', async () => {
-  const completedIds = Array.from(jobs.values())
-    .filter(j => j.status === 'completed' || j.status === 'cancelled')
-    .map(j => j.id);
+if (clearCompletedBtn) {
+  clearCompletedBtn.addEventListener('click', async () => {
+    try {
+      await fetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
+    } catch (e) {}
+    const completedIds = Array.from(jobs.values())
+      .filter(j => j.status === 'completed' || j.status === 'cancelled' || j.status === 'error')
+      .map(j => j.id);
 
-  for (const id of completedIds) {
-    await fetch(`${API_BASE}/api/jobs/${id}`, { method: 'DELETE' });
-    jobs.delete(id);
-  }
-  renderJobs();
-});
+    for (const id of completedIds) {
+      jobs.delete(id);
+    }
+    renderJobs();
+  });
+}
+
+if (clearHistoryBtn) {
+  clearHistoryBtn.addEventListener('click', async () => {
+    try {
+      await fetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
+    } catch (e) {}
+    for (const [id, j] of jobs.entries()) {
+      if (j.status === 'completed' || j.status === 'error' || j.status === 'cancelled') {
+        jobs.delete(id);
+      }
+    }
+    renderJobs();
+    showToast('History Cleared', 'Download history and caches have been erased.');
+  });
+}
 
 openFolderBtn.addEventListener('click', triggerOpenFolder);
 openFolderFooterBtn.addEventListener('click', triggerOpenFolder);

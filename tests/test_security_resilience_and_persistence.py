@@ -113,6 +113,48 @@ class TestSecurityResilienceAndPersistence(unittest.IsolatedAsyncioTestCase):
 
         scheduler_service.remove_job(job_id)
 
+    async def test_default_concurrency_ten(self):
+        """Verify default concurrent downloads is configured to 10."""
+        self.assertEqual(scheduler_service.settings.max_concurrent_downloads, 10)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.get("/api/status")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["max_concurrent_downloads"], 10)
+
+    async def test_auto_clear_completed_downloads(self):
+        """Verify completed downloads are automatically cleared from memory and history."""
+        self.assertTrue(scheduler_service.settings.auto_clear_completed)
+        job = await scheduler_service.enqueue(
+            url="https://example.com/test_autoclear.mp4",
+            title="Auto Clear Test"
+        )
+        job_id = job.id
+        self.assertIn(job_id, scheduler_service.jobs)
+
+        # Mark completed and trigger purge
+        job.status = JobStatus.COMPLETED
+        await scheduler_service._delayed_purge_completed_job(job_id, delay_seconds=0.01)
+
+        # Job must be completely purged from memory to save memory
+        self.assertNotIn(job_id, scheduler_service.jobs)
+
+    async def test_api_clear_history(self):
+        """Verify /api/history/clear endpoint wipes history and reclaims memory."""
+        job = await scheduler_service.enqueue(
+            url="https://example.com/test_clear_hist.mp4",
+            title="Clear History Test"
+        )
+        job.status = JobStatus.COMPLETED
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/history/clear")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["status"], "cleared")
+
+        self.assertNotIn(job.id, scheduler_service.jobs)
+
 if __name__ == "__main__":
     unittest.main()
 

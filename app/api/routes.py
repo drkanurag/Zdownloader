@@ -52,6 +52,7 @@ async def get_system_status():
         "ffmpeg_path": ffmpeg_bin,
         "download_dir": scheduler_service.settings.download_dir,
         "max_concurrent_downloads": scheduler_service.settings.max_concurrent_downloads,
+        "auto_clear_completed": scheduler_service.settings.auto_clear_completed,
         "default_quality": scheduler_service.settings.default_quality
     }
 
@@ -65,7 +66,9 @@ async def update_settings(req: SettingsUpdateRequest):
         scheduler_service.settings.download_dir = req.download_dir
         storage_service.set_directory(req.download_dir)
     if req.max_concurrent_downloads:
-        scheduler_service.settings.max_concurrent_downloads = req.max_concurrent_downloads
+        scheduler_service.update_concurrency(req.max_concurrent_downloads)
+    if req.auto_clear_completed is not None:
+        scheduler_service.settings.auto_clear_completed = req.auto_clear_completed
     if req.default_quality:
         scheduler_service.settings.default_quality = req.default_quality
     return scheduler_service.settings.model_dump()
@@ -145,6 +148,16 @@ async def delete_job(job_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "deleted", "job_id": job_id}
+
+@router.post("/api/history/clear", tags=["Downloads"])
+async def clear_history():
+    count = scheduler_service.clear_history()
+    return {"status": "cleared", "count": count}
+
+@router.delete("/api/history", tags=["Downloads"])
+async def delete_history():
+    count = scheduler_service.clear_history()
+    return {"status": "cleared", "count": count}
 
 # -----------------------------------------------------------
 # STORAGE INTEGRATION
