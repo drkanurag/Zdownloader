@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Zdownloader local history & config
+.zdownloader_history.json
+.zdownloader_config.json
+*.zpart
+
+# IDEs
+.vscode/
+.idea/
+
+# Distribution & builds
+build/
+dist/
+*.egg-info/
+
+# Local Binaries
+bin/
+*.exe
+test_dl/
+

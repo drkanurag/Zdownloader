@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: zdownloader-engine
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: PORT
+        value: 8765
+    healthCheckPath: /health/ready
