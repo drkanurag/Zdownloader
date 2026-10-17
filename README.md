@@ -2,12 +2,16 @@
 > **Universal High-Speed Media & Video Downloader**  
 > Architected following enterprise **System Design**, **Microservices**, and **Data Structures & Algorithms (DSA)** principles.
 
-### 🌐 Live Website: [https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)
+### 🌐 Live Website & Quick Access
 [![Live Website](https://img.shields.io/badge/Live_App-drkanurag.github.io%2FZdownloader-6366f1?style=for-the-badge&logo=firefox&logoColor=white)](https://drkanurag.github.io/Zdownloader/)
 [![CI Status](https://img.shields.io/badge/CI_Tests-Passing-10b981?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/drkanurag/Zdownloader/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-3b82f6?style=for-the-badge)](LICENSE)
 
-> 🚀 **Quick Start:** Open the live web app at **[https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)**. When your local engine is running (`run_zdownloader.bat`), the site instantly connects, automatically inspects clipboard links, and saves videos directly to your computer at line speed!
+> 🚀 **Quick Start Guide:**
+> 1. **Start the Engine:** Double-click `run_zdownloader.bat` on your PC (or run `python start.py`).
+> 2. **Access the App:**
+>    - **Local Web App (Recommended):** [http://127.0.0.1:8765](http://127.0.0.1:8765) *(Opens automatically. Works with 100% full line speed, clipboard auto-reader, and zero browser Mixed Content restrictions).*
+>    - **GitHub Cloud Mirror:** [https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/) *(Connects to your engine. If Chrome shows "Failed to fetch", allow Insecure Content in site settings or use the local URL).*
 
 ---
 
@@ -122,13 +126,15 @@ Zdownloader is accessible live on GitHub Pages:
 
 ### ⚡ How to Use the Live Site with Your PC
 
-1. Open **[https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)** in any browser.
-2. Run the local engine on your PC:
-   ```powershell
-   .\run_zdownloader.bat
-   ```
-3. The live website automatically detects your engine and turns **Agent Connected** (emerald green).
-4. Videos download at maximum local line speed directly into your computer's `Downloads/Zdownloader` folder with lossless audio/video remuxing.
+1. **Option A (Recommended — Direct Local App):**
+   - Double-click `run_zdownloader.bat` on your PC.
+   - It will automatically open **[http://127.0.0.1:8765](http://127.0.0.1:8765)**.
+   - No browser restrictions, no mixed-content blocks, downloads directly into `Downloads/Zdownloader`.
+
+2. **Option B (GitHub Cloud Mirror):**
+   - Open **[https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/)**.
+   - Start `run_zdownloader.bat` on your PC.
+   - *Note on Chrome/Edge:* Since GitHub Pages is HTTPS and your local engine is HTTP, if Chrome blocks local requests with "Failed to fetch", click the site settings slider next to the URL ➔ Set **Insecure content** to **Allow** ➔ Click "Retry Connection". Or simply use the direct local link above!
 
 ---
 

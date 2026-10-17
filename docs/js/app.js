@@ -80,6 +80,11 @@ const historyCountBadge = document.getElementById('historyCountBadge');
 const clearCompletedBtn = document.getElementById('clearCompletedBtn');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
+let agentOnline = false;
+
+const cloudMirrorBanner = document.getElementById('cloudMirrorBanner');
+const bannerHelpBtn = document.getElementById('bannerHelpBtn');
+const agentStatusBadge = document.getElementById('agentStatusBadge');
 const agentStatusDot = document.getElementById('agentStatusDot');
 const agentStatusPing = document.getElementById('agentStatusPing');
 const agentStatusText = document.getElementById('agentStatusText');
@@ -248,16 +253,26 @@ function scheduleReconnect() {
 }
 
 function setAgentStatus(online) {
+  agentOnline = online;
   if (online) {
     agentStatusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
     agentStatusPing.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75';
     agentStatusText.textContent = 'Agent Connected';
+    if (cloudMirrorBanner) cloudMirrorBanner.classList.add('hidden');
     disconnectedModal.classList.add('hidden');
   } else {
     agentStatusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-red-500';
     agentStatusPing.className = 'hidden';
     agentStatusText.textContent = 'Agent Disconnected';
+    if (cloudMirrorBanner && window.location.hostname.endsWith('github.io')) {
+      cloudMirrorBanner.classList.remove('hidden');
+    }
   }
+}
+
+function showDisconnectedHelpModal() {
+  disconnectedModal.classList.remove('hidden');
+  if (window.lucide) lucide.createIcons();
 }
 
 // Ping heartbeat
@@ -557,6 +572,12 @@ async function analyzeLinks(autoDownload = false) {
     return;
   }
 
+  // If local engine is not connected, open troubleshooting modal with 1-click launcher
+  if (!agentOnline) {
+    showDisconnectedHelpModal();
+    return;
+  }
+
   const btn = autoDownload ? downloadAllBtn : analyzeBtn;
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
@@ -604,7 +625,12 @@ async function analyzeLinks(autoDownload = false) {
     }
 
   } catch (err) {
-    alert('Error analyzing links: ' + err.message);
+    if (err.message && (err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed to fetch'))) {
+      setAgentStatus(false);
+      showDisconnectedHelpModal();
+    } else {
+      alert('Error analyzing links: ' + err.message);
+    }
   } finally {
     btn.disabled = false;
     btn.innerHTML = originalHtml;
@@ -702,6 +728,10 @@ function renderInspectorCards() {
 }
 
 async function enqueueDownloadBatch(items) {
+  if (!agentOnline) {
+    showDisconnectedHelpModal();
+    return;
+  }
   try {
     const res = await fetch(`${API_BASE}/api/download`, {
       method: 'POST',
@@ -715,7 +745,12 @@ async function enqueueDownloadBatch(items) {
       renderJobs();
     }
   } catch (err) {
-    alert('Error queueing downloads: ' + err.message);
+    if (err.message && (err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed to fetch'))) {
+      setAgentStatus(false);
+      showDisconnectedHelpModal();
+    } else {
+      alert('Error queueing downloads: ' + err.message);
+    }
   }
 }
 
@@ -1238,6 +1273,23 @@ retryConnectionBtn.addEventListener('click', () => {
   connectWebSocket();
   fetchStatus();
 });
+
+if (agentStatusBadge) {
+  agentStatusBadge.addEventListener('click', () => {
+    if (!agentOnline) {
+      showDisconnectedHelpModal();
+    } else {
+      fetchSettings();
+      settingsModal.classList.remove('hidden');
+    }
+  });
+}
+
+if (bannerHelpBtn) {
+  bannerHelpBtn.addEventListener('click', () => {
+    showDisconnectedHelpModal();
+  });
+}
 
 if (resetApiBaseBtn) {
   resetApiBaseBtn.addEventListener('click', () => {

@@ -46,18 +46,22 @@ async def correlation_id_middleware(request: Request, call_next):
     response.headers["X-Correlation-ID"] = trace_id
     return response
 
-# Security Headers Middleware
+# Security Headers & Private Network Access Middleware
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Chrome Private Network Access (PNA) preflight & response support
+    if request.headers.get("access-control-request-private-network") == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
 
 # Restrict CORS to authorized origins only (Localhost, 127.0.0.1, and official GitHub Pages deployment)
 ALLOWED_ORIGINS = [
     "https://drkanurag.github.io",
+    "https://drkanurag.github.io/Zdownloader",
     "http://127.0.0.1:8765",
     "http://localhost:8765",
     "http://127.0.0.1:3000",
@@ -72,10 +76,11 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://drkanurag\.github\.io$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://drkanurag\.github\.io(/.*)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Include API Router
