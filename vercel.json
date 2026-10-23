@@ -10,24 +10,19 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index.py"
+      "destination": "/api/index.py/$1"
     },
     {
       "source": "/api",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/status",
-      "destination": "/api/index.py"
+      "destination": "/api/index.py/status"
     },
     {
       "source": "/health(.*)",
-      "destination": "/api/index.py"
+      "destination": "/api/index.py/health$1"
     },
     {
       "source": "/ready(.*)",
-      "destination": "/api/index.py"
+      "destination": "/api/index.py/ready$1"
     }
   ]
 }
-

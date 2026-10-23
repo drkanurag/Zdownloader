@@ -56,6 +56,8 @@ async def vercel_path_normalizer(request: Request, call_next):
         suffix = raw_path[len("/api/index.py"):]
         if not suffix or suffix == "/":
             request.scope["path"] = "/api/status"
+        elif suffix.startswith("/health") or suffix.startswith("/ready"):
+            request.scope["path"] = suffix
         elif suffix.startswith("/api/"):
             request.scope["path"] = suffix
         else:

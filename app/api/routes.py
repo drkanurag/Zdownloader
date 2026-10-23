@@ -49,12 +49,14 @@ async def readiness_probe():
 @router.get("/api/index.py", tags=["System"])
 async def get_system_status():
     ffmpeg_bin = get_ffmpeg_path()
+    is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
     return {
         "status": "online",
-        "agent": "Zdownloader High-Performance Engine",
+        "agent": "Zdownloader Cloud API" if is_serverless else "Zdownloader High-Performance Engine",
         "version": "2.0.0-microservices",
+        "mode": "cloud_serverless" if is_serverless else "local_engine",
         "ffmpeg_available": ffmpeg_bin is not None,
-        "ffmpeg_path": ffmpeg_bin,
+        "ffmpeg_path": ffmpeg_bin or ("Cloud Serverless" if is_serverless else "Not Installed"),
         "download_dir": scheduler_service.settings.download_dir,
         "max_concurrent_downloads": scheduler_service.settings.max_concurrent_downloads,
         "auto_clear_completed": scheduler_service.settings.auto_clear_completed,
@@ -184,8 +186,6 @@ async def open_downloaded_file(payload: Dict[str, Any]):
     if job_id and job_id in scheduler_service.jobs:
         path = scheduler_service.jobs[job_id].target_filepath
 
-    if not path or not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Target file does not exist on disk")
     if not path:
         raise HTTPException(status_code=400, detail="Target path is required")
 
