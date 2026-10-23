@@ -21,11 +21,13 @@ router = APIRouter()
 # -----------------------------------------------------------
 # HEALTH PROBES (Microservices Standards)
 # -----------------------------------------------------------
+@router.get("/health", tags=["Health"])
 @router.get("/health/live", tags=["Health"])
 async def liveness_probe():
     """Liveness probe to confirm microservice container is up."""
     return {"status": "alive"}
 
+@router.get("/ready", tags=["Health"])
 @router.get("/health/ready", tags=["Health"])
 async def readiness_probe():
     """Readiness probe verifying disk and FFmpeg availability."""
@@ -42,6 +44,9 @@ async def readiness_probe():
 # STATUS & SETTINGS
 # -----------------------------------------------------------
 @router.get("/api/status", tags=["System"])
+@router.get("/status", tags=["System"])
+@router.get("/api", tags=["System"])
+@router.get("/api/index.py", tags=["System"])
 async def get_system_status():
     ffmpeg_bin = get_ffmpeg_path()
     is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
@@ -59,10 +64,12 @@ async def get_system_status():
     }
 
 @router.get("/api/settings", tags=["Settings"])
+@router.get("/settings", tags=["Settings"])
 async def get_settings():
     return scheduler_service.settings.model_dump()
 
 @router.post("/api/settings", tags=["Settings"])
+@router.post("/settings", tags=["Settings"])
 async def update_settings(req: SettingsUpdateRequest):
     if req.download_dir:
         scheduler_service.settings.download_dir = req.download_dir
@@ -79,6 +86,7 @@ async def update_settings(req: SettingsUpdateRequest):
 # LINK INSPECTION
 # -----------------------------------------------------------
 @router.post("/api/analyze", tags=["Inspection"])
+@router.post("/analyze", tags=["Inspection"])
 async def analyze_links(req: AnalyzeBatchRequest):
     urls = [u.strip() for u in req.urls if u.strip()]
     if not urls:
@@ -92,6 +100,7 @@ async def analyze_links(req: AnalyzeBatchRequest):
 # JOB QUEUE & DOWNLOADS
 # -----------------------------------------------------------
 @router.post("/api/download", tags=["Downloads"])
+@router.post("/download", tags=["Downloads"])
 async def enqueue_downloads(req: EnqueueDownloadsRequest):
     if not req.items:
         raise HTTPException(status_code=400, detail="No items provided to download")
@@ -112,6 +121,7 @@ async def enqueue_downloads(req: EnqueueDownloadsRequest):
     return {"enqueued": enqueued_jobs}
 
 @router.get("/api/jobs", tags=["Downloads"])
+@router.get("/jobs", tags=["Downloads"])
 async def get_jobs():
     jobs = scheduler_service.get_all_jobs()
     return {"jobs": [j.model_dump() for j in jobs]}

@@ -9,15 +9,23 @@
   },
   "rewrites": [
     {
-      "source": "/api/:path*",
+      "source": "/api/(.*)",
       "destination": "/api/index.py"
     },
     {
-      "source": "/health",
+      "source": "/api",
       "destination": "/api/index.py"
     },
     {
-      "source": "/ready",
+      "source": "/status",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/health(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/ready(.*)",
       "destination": "/api/index.py"
     }
   ]

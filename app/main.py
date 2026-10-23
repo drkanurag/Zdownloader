@@ -48,6 +48,20 @@ async def correlation_id_middleware(request: Request, call_next):
     response.headers["X-Correlation-ID"] = trace_id
     return response
 
+# Vercel Serverless Path Normalizer Middleware
+@app.middleware("http")
+async def vercel_path_normalizer(request: Request, call_next):
+    raw_path = request.scope.get("path", "")
+    if raw_path.startswith("/api/index.py"):
+        suffix = raw_path[len("/api/index.py"):]
+        if not suffix or suffix == "/":
+            request.scope["path"] = "/api/status"
+        elif suffix.startswith("/api/"):
+            request.scope["path"] = suffix
+        else:
+            request.scope["path"] = "/api" + (suffix if suffix.startswith("/") else "/" + suffix)
+    return await call_next(request)
+
 # Security Headers & Private Network Access Middleware
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
