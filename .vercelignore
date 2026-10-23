@@ -1,0 +1,11 @@
+.venv/
+bin/
+tests/
+downloads/
+*.zip
+*.bat
+.git/
+.vscode/
+docs/
+__pycache__/
+*.pyc

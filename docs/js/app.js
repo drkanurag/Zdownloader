@@ -48,6 +48,7 @@ function updateApiBase(newUrl) {
 let jobs = new Map();
 let detectedItems = [];
 let currentTab = 'active';
+let isCloudMode = false;
 let appSettings = null;
 let socket = null;
 let reconnectTimer = null;
@@ -206,6 +207,11 @@ function showToast(title, message, actions = []) {
 // WEBSOCKET & AGENT CONNECTION
 // -------------------------------------------------------------
 function connectWebSocket() {
+  if (API_BASE.includes('vercel.app') || window.location.hostname.includes('vercel.app')) {
+    // Vercel serverless functions do not sustain persistent WebSocket connections.
+    // Use regular HTTP polling instead.
+    return;
+  }
   if (socket && socket.readyState === WebSocket.OPEN) return;
 
   try {
@@ -257,14 +263,14 @@ function setAgentStatus(online) {
   if (online) {
     agentStatusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
     agentStatusPing.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75';
-    agentStatusText.textContent = 'Agent Connected';
-    if (cloudMirrorBanner) cloudMirrorBanner.classList.add('hidden');
+    agentStatusText.textContent = isCloudMode ? 'Cloud API Online' : 'Agent Connected';
+    if (cloudMirrorBanner && !isCloudMode) cloudMirrorBanner.classList.add('hidden');
     disconnectedModal.classList.add('hidden');
   } else {
     agentStatusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-red-500';
     agentStatusPing.className = 'hidden';
     agentStatusText.textContent = 'Agent Disconnected';
-    if (cloudMirrorBanner && window.location.hostname.endsWith('github.io')) {
+    if (cloudMirrorBanner && (window.location.hostname.endsWith('github.io') || window.location.hostname.includes('vercel.app'))) {
       cloudMirrorBanner.classList.remove('hidden');
     }
   }
@@ -281,6 +287,14 @@ setInterval(() => {
     socket.send('ping');
   }
 }, 25000);
+
+// Periodic status & job sync fallback (when WebSocket is not connected or in cloud serverless mode)
+setInterval(() => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    fetchStatus();
+    fetchJobs();
+  }
+}, 4000);
 
 // -------------------------------------------------------------
 // CLIPBOARD AUTO-DETECTION & LINKGRABBER HANDLER
@@ -430,9 +444,15 @@ async function fetchStatus() {
     const res = await fetch(`${API_BASE}/api/status`);
     if (!res.ok) throw new Error('Failed to fetch status');
     const data = await res.json();
+    isCloudMode = (data.mode === 'cloud_serverless');
     setAgentStatus(true);
 
-    if (data.ffmpeg_available) {
+    if (isCloudMode) {
+      agentStatusText.textContent = 'Cloud API Online';
+      ffmpegText.textContent = 'Cloud Engine';
+      ffmpegBadge.classList.remove('hidden');
+      settingFfmpegPath.textContent = data.ffmpeg_path || 'Cloud Serverless';
+    } else if (data.ffmpeg_available) {
       ffmpegText.textContent = 'FFmpeg 7.1 Active';
       ffmpegBadge.classList.remove('hidden');
       settingFfmpegPath.textContent = data.ffmpeg_path || 'Active';

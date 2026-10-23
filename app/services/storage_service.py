@@ -11,11 +11,22 @@ class StorageService:
     """
     def __init__(self, base_dir: str):
         self.base_dir = os.path.realpath(os.path.expanduser(base_dir))
-        os.makedirs(self.base_dir, exist_ok=True)
+        try:
+            os.makedirs(self.base_dir, exist_ok=True)
+        except OSError:
+            # Serverless fallback for read-only environments (e.g. Vercel / AWS Lambda)
+            self.base_dir = os.path.realpath("/tmp/Zdownloader")
+            try:
+                os.makedirs(self.base_dir, exist_ok=True)
+            except Exception:
+                pass
 
     def set_directory(self, new_dir: str) -> None:
         self.base_dir = os.path.realpath(os.path.expanduser(new_dir))
-        os.makedirs(self.base_dir, exist_ok=True)
+        try:
+            os.makedirs(self.base_dir, exist_ok=True)
+        except OSError:
+            pass
 
     def is_safe_path(self, target_path: str) -> bool:
         """

@@ -19,16 +19,18 @@ main_loop = None
 async def lifespan(app: FastAPI):
     global main_loop
     main_loop = asyncio.get_running_loop()
-    # Microservice startup
-    logger.info("Initializing Zdownloader Microservices...")
-    await scheduler_service.start()
-    from app.services.clipboard_service import clipboard_service
-    clipboard_service.start()
+    # In serverless environments (Vercel / Lambda), skip persistent background daemons
+    is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+    if not is_serverless:
+        logger.info("Initializing Zdownloader Microservices...")
+        await scheduler_service.start()
+        from app.services.clipboard_service import clipboard_service
+        clipboard_service.start()
     yield
-    # Microservice graceful shutdown
-    logger.info("Shutting down Zdownloader Microservices gracefully...")
-    clipboard_service.stop()
-    await scheduler_service.stop()
+    if not is_serverless:
+        logger.info("Shutting down Zdownloader Microservices gracefully...")
+        clipboard_service.stop()
+        await scheduler_service.stop()
 
 app = FastAPI(
     title="Zdownloader Microservices Engine",
@@ -62,6 +64,7 @@ async def security_headers_middleware(request: Request, call_next):
 ALLOWED_ORIGINS = [
     "https://drkanurag.github.io",
     "https://drkanurag.github.io/Zdownloader",
+    "https://zdownloader-rho.vercel.app",
     "http://127.0.0.1:8765",
     "http://localhost:8765",
     "http://127.0.0.1:3000",
@@ -76,7 +79,7 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://drkanurag\.github\.io(/.*)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://.*\.vercel\.app$|^https://drkanurag\.github\.io(/.*)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,6 +98,14 @@ if static_dir.exists():
     if (static_dir / "js").exists():
         app.mount("/js", StaticFiles(directory=str(static_dir / "js")), name="js")
 
-    @app.get("/")
-    async def serve_index():
-        return FileResponse(str(static_dir / "index.html"))
+@app.get("/")
+async def serve_index():
+    candidates = [
+        static_dir / "index.html",
+        Path(__file__).resolve().parent.parent / "public" / "index.html",
+        Path(__file__).resolve().parent.parent / "docs" / "index.html"
+    ]
+    for c in candidates:
+        if c.exists():
+            return FileResponse(str(c))
+    return {"status": "online", "agent": "Zdownloader Engine"}

@@ -3,7 +3,8 @@
 > Architected following enterprise **System Design**, **Microservices**, and **Data Structures & Algorithms (DSA)** principles.
 
 ### 🌐 Live Website & Quick Access
-[![Live Website](https://img.shields.io/badge/Live_App-drkanurag.github.io%2FZdownloader-6366f1?style=for-the-badge&logo=firefox&logoColor=white)](https://drkanurag.github.io/Zdownloader/)
+[![Vercel Deployment](https://img.shields.io/badge/Vercel_App-zdownloader--rho.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://zdownloader-rho.vercel.app/)
+[![GitHub Pages](https://img.shields.io/badge/GitHub_Pages-drkanurag.github.io%2FZdownloader-6366f1?style=for-the-badge&logo=github&logoColor=white)](https://drkanurag.github.io/Zdownloader/)
 [![CI Status](https://img.shields.io/badge/CI_Tests-Passing-10b981?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/drkanurag/Zdownloader/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-3b82f6?style=for-the-badge)](LICENSE)
 
@@ -11,7 +12,8 @@
 > 1. **Start the Engine:** Double-click `run_zdownloader.bat` on your PC (or run `python start.py`).
 > 2. **Access the App:**
 >    - **Local Web App (Recommended):** [http://127.0.0.1:8765](http://127.0.0.1:8765) *(Opens automatically. Works with 100% full line speed, clipboard auto-reader, and zero browser Mixed Content restrictions).*
->    - **GitHub Cloud Mirror:** [https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/) *(Connects to your engine. If Chrome shows "Failed to fetch", allow Insecure Content in site settings or use the local URL).*
+>    - **Vercel Cloud App:** [https://zdownloader-rho.vercel.app/](https://zdownloader-rho.vercel.app/) *(Hosted on Vercel Edge Network with serverless API bridge).*
+>    - **GitHub Cloud Mirror:** [https://drkanurag.github.io/Zdownloader/](https://drkanurag.github.io/Zdownloader/) *(Hosted on GitHub Pages).*
 
 ---
 
