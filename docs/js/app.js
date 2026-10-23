@@ -16,11 +16,8 @@ function getInitialApiBase() {
     return window.location.origin;
   }
 
-  // If running on a cloud deployment
-  if (!window.location.hostname.endsWith('github.io')) {
-    return window.location.origin;
-  }
-
+  // By default, connect to the Local Engine at http://127.0.0.1:8765
+  // so downloads save to the user's PC and YouTube is never blocked by datacenter rate-limits.
   return 'http://127.0.0.1:8765';
 }
 
@@ -539,6 +536,20 @@ async function fetchStatus() {
       settingDownloadDir.value = data.download_dir;
     }
   } catch (err) {
+    // If local engine is offline and we are visiting a cloud domain, auto-fallback to cloud API
+    if (API_BASE.includes('127.0.0.1') && !window.location.origin.includes('127.0.0.1') && !window.location.origin.includes('localhost') && !window.location.hostname.endsWith('github.io')) {
+      try {
+        const cloudRes = await fetch(`${window.location.origin}/api/status`);
+        if (cloudRes.ok) {
+          const cloudData = await cloudRes.json();
+          API_BASE = window.location.origin;
+          isCloudMode = true;
+          setAgentStatus(true);
+          agentStatusText.textContent = 'Cloud Mode (Local Offline)';
+          return;
+        }
+      } catch (e) {}
+    }
     setAgentStatus(false);
   }
 }
