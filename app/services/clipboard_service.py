@@ -6,7 +6,7 @@ import threading
 import asyncio
 from typing import Optional, List, Callable, Dict, Any
 
-URL_REGEX = re.compile(r'https?://[^\s<>"\'`]+')
+URL_REGEX = re.compile(r'https?://(?:(?!https?://)[^\s<>"\'`])+')
 
 class ClipboardMonitorService:
     """
@@ -64,11 +64,16 @@ class ClipboardMonitorService:
             return None
 
     def extract_urls(self, text: Optional[str]) -> List[str]:
-        """Extract valid HTTP/HTTPS URLs from text."""
+        """Extract valid HTTP/HTTPS URLs from text, cleanly separating concatenated URLs."""
         if not text:
             return []
         matches = URL_REGEX.findall(text)
-        return [m.strip().rstrip(".,;)>]") for m in matches if m.strip()]
+        cleaned = []
+        for m in matches:
+            u = m.strip().rstrip(".,;)>]")
+            if u and (u.startswith("http://") or u.startswith("https://")):
+                cleaned.append(u)
+        return list(dict.fromkeys(cleaned))
 
     def start(self):
         """Start the background clipboard watcher thread."""

@@ -21,6 +21,13 @@ class TestClipboardAndVideoFormats(unittest.TestCase):
         urls3 = clipboard_service.extract_urls(text3)
         self.assertEqual(len(urls3), 0)
 
+        # Concatenated URLs without whitespace
+        text4 = "https://www.youtube.com/shorts/L48g2cAhrCI?feature=sharehttps://www.youtube.com/shorts/2DgRxMLMBJE?feature=share"
+        urls4 = clipboard_service.extract_urls(text4)
+        self.assertEqual(len(urls4), 2)
+        self.assertEqual(urls4[0], "https://www.youtube.com/shorts/L48g2cAhrCI?feature=share")
+        self.assertEqual(urls4[1], "https://www.youtube.com/shorts/2DgRxMLMBJE?feature=share")
+
     def test_video_format_selection_logic(self):
         # Default bestvideo+bestaudio should NOT be treated as audio-only
         format_id = "bestvideo+bestaudio/best"

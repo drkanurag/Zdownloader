@@ -126,10 +126,14 @@ class InspectionService:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "socket_timeout": 12,
+            "socket_timeout": 15,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "ios", "web"]
+                    "player_client": ["android", "ios", "tv", "mweb"]
                 }
             },
         }
@@ -277,7 +281,55 @@ class InspectionService:
                     title="DRM Protected Content",
                     error_message="This media is protected by DRM encryption and cannot be downloaded."
                 )
-            elif "login" in err_msg.lower() or "sign in" in err_msg.lower() or "private" in err_msg.lower():
+            elif "not a bot" in err_msg.lower() or "bot" in err_msg.lower() or "429" in err_msg.lower():
+                # Attempt retry with alternative mobile player client
+                try:
+                    retry_opts = {
+                        "extract_flat": False,
+                        "skip_download": True,
+                        "quiet": True,
+                        "no_warnings": True,
+                        "noplaylist": True,
+                        "socket_timeout": 15,
+                        "extractor_args": {
+                            "youtube": {
+                                "player_client": ["ios", "android"]
+                            }
+                        }
+                    }
+                    if get_ffmpeg_path():
+                        retry_opts["ffmpeg_location"] = get_ffmpeg_path()
+                    with yt_dlp.YoutubeDL(retry_opts) as retry_ydl:
+                        info = retry_ydl.extract_info(url, download=False)
+                        if info:
+                            info = retry_ydl.sanitize_info(info)
+                            formats = self._build_format_options(info)
+                            default_fmt = formats[0].format_id if formats else "best"
+                            result = AnalyzedLink(
+                                id=link_id,
+                                url=url,
+                                status="supported",
+                                title=info.get("title") or "Untitled Video",
+                                duration=info.get("duration"),
+                                duration_str=format_seconds(info.get("duration")) if info.get("duration") else None,
+                                thumbnail=info.get("thumbnail"),
+                                uploader=info.get("uploader") or info.get("channel"),
+                                platform=info.get("extractor_key") or platform_name,
+                                formats=formats,
+                                selected_format_id=default_fmt
+                            )
+                            await self.cache.put(url, result)
+                            return result
+                except Exception:
+                    pass
+                return AnalyzedLink(
+                    id=link_id,
+                    url=url,
+                    status="unsupported",
+                    title="YouTube Rate Limit",
+                    error_message="YouTube rate limit hit. Try downloading via the local engine or retry in a few moments."
+                )
+            elif ("login" in err_msg.lower() or "private" in err_msg.lower() or "sign in" in err_msg.lower()) and "not a bot" not in err_msg.lower():
                 return AnalyzedLink(
                     id=link_id,
                     url=url,

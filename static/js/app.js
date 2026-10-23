@@ -297,61 +297,98 @@ setInterval(() => {
 }, 4000);
 
 // -------------------------------------------------------------
+// URL EXTRACTION & PARSING
+// -------------------------------------------------------------
+function extractUrlsFromText(text) {
+  if (!text || typeof text !== 'string') return [];
+  // Match all http/https links even if adjacent without spaces (e.g. sharehttps://...)
+  const regex = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'`])+/gi;
+  const matches = text.match(regex);
+  if (matches && matches.length > 0) {
+    const cleaned = matches.map(u => u.trim().replace(/[.,;)>\]]+$/, '')).filter(u => u.length > 0);
+    return Array.from(new Set(cleaned));
+  }
+  return text.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+}
+
+function getUrlsFromInput() {
+  const text = urlInput.value.trim();
+  if (!text) return [];
+  return extractUrlsFromText(text);
+}
+
+// -------------------------------------------------------------
 // CLIPBOARD AUTO-DETECTION & LINKGRABBER HANDLER
 // -------------------------------------------------------------
 let lastProcessedClipboardUrl = null;
+let lastClipboardBrowserText = '';
 
 async function handleClipboardDetected(url, allUrls) {
   if (!clipboardMonitorEnabled) return;
-  if (!url || typeof url !== 'string') return;
-  url = url.trim();
-  if (!url || url === lastProcessedClipboardUrl) return;
 
-  // Insert into textarea if not already present
-  const currentText = urlInput.value.trim();
-  if (!currentText.includes(url)) {
-    urlInput.value = currentText ? `${currentText}\n${url}` : url;
-  }
+  // Extract all clean individual URLs from input/clipboard
+  const rawUrls = (allUrls && allUrls.length > 0) ? allUrls : [url];
+  const candidateUrls = [];
+  rawUrls.forEach(u => {
+    if (typeof u === 'string') {
+      const extracted = extractUrlsFromText(u);
+      candidateUrls.push(...extracted);
+    }
+  });
 
-  // Check if link is already analyzed or currently downloading
-  const alreadyInDetected = detectedItems.some(i => i.url === url);
-  const alreadyInJobs = Array.from(jobs.values()).some(j => j.url === url && (j.status === 'queued' || j.status === 'downloading' || j.status === 'merging'));
+  const validUrls = Array.from(new Set(candidateUrls.map(u => u.trim()))).filter(u => u.startsWith('http://') || u.startsWith('https://'));
+  if (validUrls.length === 0) return;
 
-  if (alreadyInDetected || alreadyInJobs) {
-    return;
-  }
+  const primaryUrl = validUrls[0];
+  if (primaryUrl === lastProcessedClipboardUrl && validUrls.length === 1) return;
+  lastProcessedClipboardUrl = primaryUrl;
 
-  lastProcessedClipboardUrl = url;
+  // Insert any missing URLs into textarea cleanly separated by newlines
+  const currentExtracted = extractUrlsFromText(urlInput.value);
+  const updatedLines = [...currentExtracted];
+  validUrls.forEach(u => {
+    if (!updatedLines.includes(u)) {
+      updatedLines.push(u);
+    }
+  });
+  urlInput.value = updatedLines.join('\n');
+
+  // Filter out URLs that are already inspected or currently queued/downloading
+  const urlsToAnalyze = validUrls.filter(u => {
+    const inDetected = detectedItems.some(i => i.url === u);
+    const inJobs = Array.from(jobs.values()).some(j => j.url === u && (j.status === 'queued' || j.status === 'downloading' || j.status === 'merging'));
+    return !inDetected && !inJobs;
+  });
+
+  if (urlsToAnalyze.length === 0) return;
 
   // Floating toast alert with instant actions
-  showToast('Link Auto-Captured from Clipboard', url, [
+  const toastTitle = urlsToAnalyze.length === 1 
+    ? 'Link Auto-Captured from Clipboard' 
+    : `${urlsToAnalyze.length} Links Auto-Captured from Clipboard`;
+  const toastSubtitle = urlsToAnalyze.length === 1 ? urlsToAnalyze[0] : `${urlsToAnalyze.length} media links found`;
+
+  showToast(toastTitle, toastSubtitle, [
     {
-      label: 'Auto-Download MP4',
+      label: 'Auto-Download All (MP4)',
       primary: true,
       onClick: async () => {
-        const item = detectedItems.find(i => i.url === url);
-        if (item) {
-          const selFmt = (item.formats || []).find(f => f.format_id === item.selected_format_id) || item.formats[0];
-          await enqueueDownloadBatch([{
-            url: item.url,
-            title: item.title,
-            thumbnail: item.thumbnail,
-            platform: item.platform,
-            format_id: item.selected_format_id || 'best',
+        const batch = urlsToAnalyze.map(u => {
+          const item = detectedItems.find(i => i.url === u);
+          const selFmt = item ? (item.formats || []).find(f => f.format_id === item.selected_format_id) || item.formats[0] : null;
+          return {
+            url: u,
+            title: item ? item.title : 'Media Download',
+            thumbnail: item ? item.thumbnail : null,
+            platform: item ? item.platform : 'Web',
+            format_id: item ? item.selected_format_id || 'best' : 'best',
             format_label: selFmt ? selFmt.label : 'Highest Quality MP4'
-          }]);
-          detectedItems = detectedItems.filter(i => i.url !== url);
-          renderInspectorCards();
-          switchTab('active');
-        } else {
-          await enqueueDownloadBatch([{
-            url: url,
-            title: 'Video Download',
-            format_id: 'best',
-            format_label: 'Highest Quality MP4'
-          }]);
-          switchTab('active');
-        }
+          };
+        });
+        await enqueueDownloadBatch(batch);
+        detectedItems = detectedItems.filter(i => !urlsToAnalyze.includes(i.url));
+        renderInspectorCards();
+        switchTab('active');
       }
     }
   ]);
@@ -361,7 +398,7 @@ async function handleClipboardDetected(url, allUrls) {
     const res = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ urls: [url] })
+      body: JSON.stringify({ urls: urlsToAnalyze })
     });
     if (res.ok) {
       const data = await res.json();
@@ -379,20 +416,56 @@ async function handleClipboardDetected(url, allUrls) {
   }
 }
 
+// Browser Window Focus & Tab Visibility Auto-Clipboard Reader
+async function checkBrowserClipboard() {
+  if (!clipboardMonitorEnabled) return;
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.readText) return;
+    const text = await navigator.clipboard.readText();
+    if (!text || text === lastClipboardBrowserText) return;
+    lastClipboardBrowserText = text;
+    const extracted = extractUrlsFromText(text);
+    if (extracted.length > 0) {
+      handleClipboardDetected(extracted[0], extracted);
+    }
+  } catch (e) {
+    // Silent fail if browser clipboard permission prompt is dismissed
+  }
+}
+
+window.addEventListener('focus', checkBrowserClipboard);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    checkBrowserClipboard();
+  }
+});
+
 // Active polling fallback for Windows clipboard (polls every 1200ms)
 setInterval(async () => {
   if (!clipboardMonitorEnabled) return;
+  // 1. Check API_BASE clipboard endpoint
   try {
     const res = await fetch(`${API_BASE}/api/clipboard`);
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data.enabled && data.has_url && data.url) {
-      if (data.url !== lastProcessedClipboardUrl) {
-        handleClipboardDetected(data.url, data.urls || [data.url]);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.enabled && data.has_url && data.urls && data.urls.length > 0) {
+        handleClipboardDetected(data.url, data.urls);
+        return;
       }
     }
-  } catch (e) {
-    // Silent ignore
+  } catch (e) {}
+
+  // 2. If running on a cloud mirror (Vercel/GitHub Pages), also query local engine at 127.0.0.1:8765
+  if (!API_BASE.includes('127.0.0.1') && !API_BASE.includes('localhost')) {
+    try {
+      const localRes = await fetch('http://127.0.0.1:8765/api/clipboard');
+      if (localRes.ok) {
+        const localData = await localRes.json();
+        if (localData.enabled && localData.has_url && localData.urls && localData.urls.length > 0) {
+          handleClipboardDetected(localData.url, localData.urls);
+        }
+      }
+    } catch (e) {}
   }
 }, 1200);
 
@@ -578,11 +651,6 @@ async function triggerOpenFile(jobId, filePath) {
 // -------------------------------------------------------------
 // LINK ANALYSIS & FORMAT INSPECTION
 // -------------------------------------------------------------
-function getUrlsFromInput() {
-  const text = urlInput.value.trim();
-  if (!text) return [];
-  return text.split('\n').map(u => u.trim()).filter(u => u.length > 0);
-}
 
 async function analyzeLinks(autoDownload = false) {
   const urls = getUrlsFromInput();
