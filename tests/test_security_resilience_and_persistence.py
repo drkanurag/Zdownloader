@@ -47,6 +47,7 @@ class TestSecurityResilienceAndPersistence(unittest.IsolatedAsyncioTestCase):
         """Verify that API endpoint /api/open-file rejects path traversal with HTTP 403."""
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/open-file", json={"path": "C:\\Windows\\System32\\notepad.exe"})
             res = await client.post("/api/open-file", json={"path": "../../secret.txt"})
             self.assertEqual(res.status_code, 403)
             self.assertIn("Security violation", res.json()["detail"])
@@ -154,6 +155,94 @@ class TestSecurityResilienceAndPersistence(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res.json()["status"], "cleared")
 
         self.assertNotIn(job.id, scheduler_service.jobs)
+
+    async def test_api_download_ssrf_rejection(self):
+        """Verify /api/download rejects malicious SSRF URLs with 400 Bad Request."""
+        malicious_urls = [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost:8080/admin",
+            "http://127.0.0.1:22/root",
+            "http://10.0.0.1/secrets.json",
+            "ftp://example.com/exploit"
+        ]
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            for bad_url in malicious_urls:
+                res = await client.post("/api/download", json={
+                    "items": [{"url": bad_url, "title": "SSRF Test"}]
+                })
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("SSRF prevention", res.json()["detail"])
+
+    async def test_api_analyze_batch_limit(self):
+        """Verify /api/analyze rejects requests exceeding MAX_BATCH_URLS (25)."""
+        urls = [f"https://example.com/video_{i}.mp4" for i in range(26)]
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/analyze", json={"urls": urls})
+            self.assertEqual(res.status_code, 400)
+            self.assertIn("Maximum 25 URLs", res.json()["detail"])
+
+    async def test_priority_queue_version_token_deduplication(self):
+        """Verify that monotonic version tokens invalidate stale heap duplicates."""
+        from app.dsa.priority_queue import PriorityQueue
+        from app.domain.models import DownloadJob
+
+        pq = PriorityQueue()
+        job = DownloadJob(id="job_dedup_1", url="https://example.com/1.mp4", title="Dedup Test")
+        
+        # Initial push (version 1)
+        await pq.push(job.id, job, priority=5)
+        self.assertEqual(len(pq), 1)
+
+        # Re-push with updated priority (increments version to 2, older heap entry invalidated)
+        await pq.push(job.id, job, priority=1)
+        self.assertEqual(len(pq), 1)
+
+        # Pop should yield the item once with current version
+        item_id, popped = await pq.pop()
+        self.assertEqual(item_id, "job_dedup_1")
+        self.assertEqual(popped.id, "job_dedup_1")
+        self.assertEqual(len(pq), 0)
+
+    async def test_pairing_token_authorization(self):
+        """Verify external non-loopback origins require pairing token authentication."""
+        from app.config import PAIRING_TOKEN
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # External origin without token -> 401 Unauthorized
+            res_unauth = await client.post(
+                "/api/settings",
+                headers={"Origin": "https://zdownloader-rho.vercel.app"},
+                json={"download_dir": "C:\\Downloads"}
+            )
+            self.assertEqual(res_unauth.status_code, 401)
+            self.assertIn("Local engine pairing token required", res_unauth.json()["detail"])
+
+            # External origin with valid token -> 200 OK
+            res_auth = await client.post(
+                "/api/settings",
+                headers={
+                    "Origin": "https://zdownloader-rho.vercel.app",
+                    "X-API-Token": PAIRING_TOKEN
+                },
+                json={"download_dir": "C:\\Downloads"}
+            )
+            self.assertEqual(res_auth.status_code, 200)
+
+    async def test_cloud_serverless_download_rejection(self):
+        """Verify serverless cloud mode rejects /api/download and instructs local engine start."""
+        os.environ["VERCEL"] = "1"
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                res = await client.post("/api/download", json={
+                    "items": [{"url": "https://example.com/safe_video.mp4", "title": "Safe Video"}]
+                })
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("Media downloads require the Zdownloader Local Engine", res.json()["detail"])
+        finally:
+            os.environ.pop("VERCEL", None)
 
 if __name__ == "__main__":
     unittest.main()

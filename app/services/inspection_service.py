@@ -9,7 +9,7 @@ import yt_dlp
 from app.domain.models import AnalyzedLink, FormatOption
 from app.dsa.lru_cache import LRUCacheWithTTL
 from app.dsa.trie import DomainRadixTrie
-from app.core.security import validate_url_security
+from app.core.security import validate_url_security, create_safe_async_client
 from app.core.circuit_breaker import CircuitBreaker
 from app.utils import format_bytes, format_seconds, get_ffmpeg_path
 
@@ -33,6 +33,7 @@ class InspectionService:
         self.cache: LRUCacheWithTTL[str, AnalyzedLink] = LRUCacheWithTTL(capacity=200, default_ttl_seconds=600.0)
         self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=20.0)
         self.domain_trie = DomainRadixTrie()
+        self._semaphore = asyncio.Semaphore(4)
         self._init_domain_trie()
 
     def _init_domain_trie(self):
@@ -56,7 +57,7 @@ class InspectionService:
 
     async def probe_direct_file(self, url: str) -> Optional[AnalyzedLink]:
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=8.0, verify=False) as client:
+            async with create_safe_async_client(timeout=8.0) as client:
                 try:
                     resp = await client.head(url)
                 except Exception:
@@ -230,11 +231,12 @@ class InspectionService:
         domain = urlparse(url).hostname or ""
         platform_name = self.domain_trie.match_subdomain(domain) or "Video Platform"
 
-        # 5. Extract with yt-dlp via Circuit Breaker
+        # 5. Extract with yt-dlp via Circuit Breaker with bounded semaphore
         try:
-            info = await self.circuit_breaker.execute(
-                asyncio.to_thread, self._extract_ytdlp, url
-            )
+            async with self._semaphore:
+                info = await self.circuit_breaker.execute(
+                    asyncio.to_thread, self._extract_ytdlp, url
+                )
 
             if not info:
                 return AnalyzedLink(
@@ -273,6 +275,9 @@ class InspectionService:
 
         except yt_dlp.utils.DownloadError as e:
             err_msg = str(e)
+            is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+            is_youtube = "youtube.com" in url or "youtu.be" in url
+
             if "DRM" in err_msg or "encrypted" in err_msg.lower() or "widevine" in err_msg.lower():
                 return AnalyzedLink(
                     id=link_id,
@@ -280,6 +285,14 @@ class InspectionService:
                     status="drm_protected",
                     title="DRM Protected Content",
                     error_message="This media is protected by DRM encryption and cannot be downloaded."
+                )
+            elif is_youtube and is_serverless:
+                return AnalyzedLink(
+                    id=link_id,
+                    url=url,
+                    status="unsupported",
+                    title="YouTube Cloud Block",
+                    error_message="YouTube blocks cloud datacenter servers (Vercel). Please run run_zdownloader.bat on your PC and use http://127.0.0.1:8765 for direct residential downloads."
                 )
             elif "not a bot" in err_msg.lower() or "bot" in err_msg.lower() or "429" in err_msg.lower():
                 # Attempt retry with alternative mobile player client
@@ -327,7 +340,7 @@ class InspectionService:
                     url=url,
                     status="unsupported",
                     title="YouTube Rate Limit",
-                    error_message="YouTube rate limit hit. Try downloading via the local engine or retry in a few moments."
+                    error_message="YouTube rate limit hit. Try downloading via the local engine at http://127.0.0.1:8765 or retry in a few moments."
                 )
             elif ("login" in err_msg.lower() or "private" in err_msg.lower() or "sign in" in err_msg.lower()) and "not a bot" not in err_msg.lower():
                 return AnalyzedLink(

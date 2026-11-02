@@ -3,15 +3,19 @@ import json
 import time
 import uuid
 import asyncio
+import logging
 from typing import Dict, List, Optional
 from app.domain.models import DownloadJob, JobStatus, JobPriority
 from app.domain.events import JobCreatedEvent, JobProgressEvent, JobCompletedEvent, JobFailedEvent, JobCancelledEvent
-from app.domain.exceptions import DownloadCancelledException, DownloadPausedException
+from app.domain.exceptions import DownloadCancelledException, DownloadPausedException, SSRFSecurityException
 from app.dsa.priority_queue import PriorityQueue
 from app.core.event_bus import event_bus
-from app.config import AppSettings, HISTORY_FILE, QUEUE_FILE
+from app.core.security import validate_url_security
+from app.config import AppSettings, HISTORY_FILE, QUEUE_FILE, atomic_write_json
 from app.services.download_service import download_service
 from app.services.inspection_service import inspection_service
+
+logger = logging.getLogger("zdownloader.scheduler")
 
 class SchedulerService:
     """
@@ -50,7 +54,7 @@ class SchedulerService:
                             continue
                         self.jobs[job.id] = job
             except Exception as e:
-                print(f"Error loading download history: {e}")
+                logger.warning(f"Error loading download history: {e}")
 
     def _save_history(self):
         try:
@@ -65,10 +69,9 @@ class SchedulerService:
                     job.model_dump() for job in self.jobs.values()
                     if job.status in (JobStatus.COMPLETED, JobStatus.FAILED)
                 ][-100:]
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(records, f, indent=2)
+            atomic_write_json(HISTORY_FILE, records)
         except Exception as e:
-            print(f"Error saving download history: {e}")
+            logger.warning(f"Error saving download history: {e}")
 
     def _load_queue(self):
         """Restore active and paused download tasks from previous session."""
@@ -87,7 +90,7 @@ class SchedulerService:
                         elif job.status == JobStatus.PAUSED:
                             self.paused_job_ids.add(job.id)
             except Exception as e:
-                print(f"Error loading download queue: {e}")
+                logger.warning(f"Error loading download queue: {e}")
 
     def _save_queue(self):
         """Persist active, pending, and paused jobs to prevent data loss on restarts."""
@@ -96,10 +99,9 @@ class SchedulerService:
                 job.model_dump() for job in self.jobs.values()
                 if job.status in (JobStatus.QUEUED, JobStatus.DOWNLOADING, JobStatus.PAUSED)
             ]
-            with open(QUEUE_FILE, "w", encoding="utf-8") as f:
-                json.dump(records, f, indent=2)
+            atomic_write_json(QUEUE_FILE, records)
         except Exception as e:
-            print(f"Error saving download queue: {e}")
+            logger.warning(f"Error saving download queue: {e}")
 
     async def start(self):
         """Start worker pool consumers and restore persisted pending jobs."""
@@ -238,6 +240,11 @@ class SchedulerService:
         platform: Optional[str] = None,
         priority: int = JobPriority.NORMAL
     ) -> DownloadJob:
+        # Validate URL security against SSRF and private networks
+        is_safe, reason = validate_url_security(url)
+        if not is_safe:
+            raise SSRFSecurityException(f"SSRF violation: {reason}")
+
         job_id = str(uuid.uuid4())
         job = DownloadJob(
             id=job_id,

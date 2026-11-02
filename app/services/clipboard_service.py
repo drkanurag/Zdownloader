@@ -25,43 +25,48 @@ class ClipboardMonitorService:
         self.on_link_detected_callbacks: List[Callable[[str, List[str]], Any]] = []
 
     def get_clipboard_text(self) -> Optional[str]:
-        """Read unicode text from Windows clipboard via pure ctypes."""
+        """Read unicode text from Windows clipboard via pure ctypes with retry on lock."""
         if sys.platform != "win32":
             return None
 
-        try:
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
 
-            user32.OpenClipboard.argtypes = [ctypes.c_void_p]
-            user32.OpenClipboard.restype = ctypes.c_bool
-            user32.GetClipboardData.argtypes = [ctypes.c_uint]
-            user32.GetClipboardData.restype = ctypes.c_void_p
-            user32.CloseClipboard.argtypes = []
-            user32.CloseClipboard.restype = ctypes.c_bool
+        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.restype = ctypes.c_bool
+        user32.GetClipboardData.argtypes = [ctypes.c_uint]
+        user32.GetClipboardData.restype = ctypes.c_void_p
+        user32.CloseClipboard.argtypes = []
+        user32.CloseClipboard.restype = ctypes.c_bool
 
-            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-            kernel32.GlobalLock.restype = ctypes.c_void_p
-            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-            kernel32.GlobalUnlock.restype = ctypes.c_bool
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.restype = ctypes.c_bool
 
-            if not user32.OpenClipboard(None):
-                return None
+        # Retry up to 5 times if another application temporarily holds the clipboard
+        for attempt in range(5):
             try:
-                handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
-                if not handle:
-                    return None
-                ptr = kernel32.GlobalLock(handle)
-                if not ptr:
-                    return None
+                if not user32.OpenClipboard(None):
+                    time.sleep(0.04)
+                    continue
                 try:
-                    return ctypes.c_wchar_p(ptr).value
+                    handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
+                    if not handle:
+                        return None
+                    ptr = kernel32.GlobalLock(handle)
+                    if not ptr:
+                        return None
+                    try:
+                        val = ctypes.c_wchar_p(ptr).value
+                        return str(val) if val else None
+                    finally:
+                        kernel32.GlobalUnlock(handle)
                 finally:
-                    kernel32.GlobalUnlock(handle)
-            finally:
-                user32.CloseClipboard()
-        except Exception:
-            return None
+                    user32.CloseClipboard()
+            except Exception:
+                time.sleep(0.04)
+        return None
 
     def extract_urls(self, text: Optional[str]) -> List[str]:
         """Extract valid HTTP/HTTPS URLs from text, cleanly separating concatenated URLs."""
@@ -101,21 +106,22 @@ class ClipboardMonitorService:
                 if self.enabled:
                     current_seq = user32.GetClipboardSequenceNumber()
                     if current_seq != self.last_seq:
-                        self.last_seq = current_seq
                         text = self.get_clipboard_text()
-                        urls = self.extract_urls(text)
-                        if urls:
-                            first_url = urls[0]
-                            self.last_url = first_url
-                            for cb in self.on_link_detected_callbacks:
-                                try:
-                                    cb(first_url, urls)
-                                except Exception as e:
-                                    print(f"[Clipboard Callback Error]: {e}")
-            except Exception as e:
+                        if text is not None:
+                            self.last_seq = current_seq
+                            urls = self.extract_urls(text)
+                            if urls:
+                                first_url = urls[0]
+                                self.last_url = first_url
+                                for cb in self.on_link_detected_callbacks:
+                                    try:
+                                        cb(first_url, urls)
+                                    except Exception as e:
+                                        print(f"[Clipboard Callback Error]: {e}")
+            except Exception:
                 pass
 
-            time.sleep(0.3)
+            time.sleep(0.2)
 
 clipboard_service = ClipboardMonitorService()
 

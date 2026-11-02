@@ -1,6 +1,7 @@
 import os
 import shutil
 from typing import Dict, Any, Optional
+from app.config import DEFAULT_DOWNLOAD_DIR
 from app.domain.exceptions import PathTraversalSecurityException
 from app.utils import open_in_file_manager, sanitize_filename, format_bytes
 
@@ -42,29 +43,46 @@ class StorageService:
         except Exception:
             return False
 
-    def has_sufficient_space(self, required_bytes: Optional[int] = None, buffer_mb: int = 50) -> bool:
+    def has_sufficient_space(self, required_bytes: Optional[int] = None, buffer_mb: int = 50, target_dir: Optional[str] = None) -> bool:
         """
         Verify that target storage volume has adequate free space.
         Leaves at least buffer_mb headroom.
         """
+        check_dir = target_dir or self.base_dir
         try:
-            _, _, free = shutil.disk_usage(self.base_dir)
+            # If target_dir doesn't exist yet, inspect its parent directory
+            inspect_dir = check_dir
+            while inspect_dir and not os.path.exists(inspect_dir):
+                parent = os.path.dirname(inspect_dir)
+                if parent == inspect_dir:
+                    break
+                inspect_dir = parent
+            
+            _, _, free = shutil.disk_usage(inspect_dir or self.base_dir)
             needed = (required_bytes or 0) + (buffer_mb * 1024 * 1024)
             return free >= needed
         except Exception:
             return True
 
-    def get_disk_usage(self) -> Dict[str, Any]:
+    def get_disk_usage(self, target_dir: Optional[str] = None) -> Dict[str, Any]:
         """Inspect storage volume capacity (total, used, free)."""
+        check_dir = target_dir or self.base_dir
         try:
-            total, used, free = shutil.disk_usage(self.base_dir)
+            inspect_dir = check_dir
+            while inspect_dir and not os.path.exists(inspect_dir):
+                parent = os.path.dirname(inspect_dir)
+                if parent == inspect_dir:
+                    break
+                inspect_dir = parent
+                
+            total, used, free = shutil.disk_usage(inspect_dir or self.base_dir)
             return {
                 "total_bytes": total,
                 "used_bytes": used,
                 "free_bytes": free,
                 "total_str": format_bytes(total),
                 "free_str": format_bytes(free),
-                "percent_free": round((free / total) * 100, 1)
+                "percent_free": round((free / total) * 100, 1) if total > 0 else 0
             }
         except Exception:
             return {"error": "Unable to query disk capacity"}
@@ -79,5 +97,4 @@ class StorageService:
             return False
         return open_in_file_manager(target_path)
 
-storage_service = StorageService(os.path.expanduser("~/Downloads/Zdownloader"))
-
+storage_service = StorageService(DEFAULT_DOWNLOAD_DIR)

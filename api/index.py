@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 # Mark environment as serverless on Vercel
-os.environ["VERCEL"] = "1"
+os.environ.setdefault("VERCEL", "1")
 
 # Add repository root to Python path so app modules import reliably
 ROOT_DIR = str(Path(__file__).resolve().parent.parent)

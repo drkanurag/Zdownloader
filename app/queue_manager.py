@@ -3,12 +3,19 @@ import json
 import time
 import uuid
 import asyncio
+import warnings
 from typing import Dict, List, Optional
 from app.models import DownloadJob, EnqueueItem
-from app.config import AppSettings, HISTORY_FILE
+from app.config import AppSettings, HISTORY_FILE, atomic_write_json
 from app.downloader import download_direct_file, download_ytdlp, DownloadCancelledException
 from app.websocket_manager import ws_manager
 from app.analyzer import is_direct_file_url
+
+warnings.warn(
+    "app.queue_manager is deprecated; use app.services.scheduler_service instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 class QueueManager:
     def __init__(self, settings: AppSettings):
@@ -37,8 +44,7 @@ class QueueManager:
             records = [job.model_dump() for job in self.jobs.values() if job.status in ("completed", "error")]
             # Keep the last 100 entries
             records = records[-100:]
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(records, f, indent=2)
+            atomic_write_json(HISTORY_FILE, records)
         except Exception as e:
             print(f"Error saving download history: {e}")
 

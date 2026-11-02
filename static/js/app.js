@@ -8,6 +8,46 @@
  *  - Explorer File & Folder Launching
  */
 
+function getAuthToken() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const tokenFromUrl = urlParams.get('token');
+  if (tokenFromUrl && tokenFromUrl.trim()) {
+    localStorage.setItem('zdownloader_token', tokenFromUrl.trim());
+    return tokenFromUrl.trim();
+  }
+  return localStorage.getItem('zdownloader_token') || '';
+}
+
+let AUTH_TOKEN = getAuthToken();
+
+function apiFetch(url, options = {}) {
+  const opts = { ...options };
+  opts.headers = { ...(opts.headers || {}) };
+  if (AUTH_TOKEN) {
+    opts.headers['X-API-Token'] = AUTH_TOKEN;
+  }
+  return fetch(url, opts);
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeImageUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (trimmed.startsWith('https://') || trimmed.startsWith('http://') || trimmed.startsWith('data:image/')) {
+    return escapeHtml(trimmed);
+  }
+  return '';
+}
+
 function getInitialApiBase() {
   const saved = localStorage.getItem('zdownloader_api_base');
   if (saved && saved.trim()) return saved.trim().replace(/\/+$/, '');
@@ -22,7 +62,16 @@ function getInitialApiBase() {
 }
 
 let API_BASE = getInitialApiBase();
-let WS_BASE = API_BASE.replace(/^http/, 'ws') + '/ws';
+
+function getWsUrl() {
+  const base = API_BASE.replace(/^http/, 'ws') + '/ws';
+  if (AUTH_TOKEN) {
+    return `${base}?token=${encodeURIComponent(AUTH_TOKEN)}`;
+  }
+  return base;
+}
+
+let WS_BASE = getWsUrl();
 
 function updateApiBase(newUrl) {
   if (!newUrl || !newUrl.trim()) {
@@ -32,7 +81,7 @@ function updateApiBase(newUrl) {
     API_BASE = newUrl.trim().replace(/\/+$/, '');
     localStorage.setItem('zdownloader_api_base', API_BASE);
   }
-  WS_BASE = API_BASE.replace(/^http/, 'ws') + '/ws';
+  WS_BASE = getWsUrl();
   if (socket) {
     try { socket.close(); } catch (e) {}
   }
@@ -147,12 +196,15 @@ function showToast(title, message, actions = []) {
       <div class="flex items-center space-x-2 pt-1">
         ${actions.map((act, idx) => `
           <button class="toast-action-btn text-xs font-semibold px-3 py-1.5 rounded-lg ${act.primary ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-gray-800 hover:bg-gray-700 text-gray-300'} transition" data-idx="${idx}">
-            ${act.label}
+            ${escapeHtml(act.label)}
           </button>
         `).join('')}
       </div>
     `;
   }
+
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
 
   toast.innerHTML = `
     <div class="flex items-start justify-between gap-2">
@@ -161,8 +213,8 @@ function showToast(title, message, actions = []) {
           <i data-lucide="clipboard-check" class="w-4 h-4"></i>
         </div>
         <div>
-          <h5 class="text-xs font-bold text-white">${title}</h5>
-          <p class="text-[11px] text-gray-400 font-mono truncate max-w-[220px]">${message}</p>
+          <h5 class="text-xs font-bold text-white">${safeTitle}</h5>
+          <p class="text-[11px] text-gray-400 font-mono truncate max-w-[220px]">${safeMessage}</p>
         </div>
       </div>
       <button class="toast-close-btn text-gray-500 hover:text-gray-300 transition p-1">
@@ -212,7 +264,7 @@ function connectWebSocket() {
   if (socket && socket.readyState === WebSocket.OPEN) return;
 
   try {
-    socket = new WebSocket(WS_BASE);
+    socket = new WebSocket(getWsUrl());
   } catch (err) {
     setAgentStatus(false);
     scheduleReconnect();
@@ -318,6 +370,7 @@ function getUrlsFromInput() {
 // CLIPBOARD AUTO-DETECTION & LINKGRABBER HANDLER
 // -------------------------------------------------------------
 let lastProcessedClipboardUrl = null;
+let lastProcessedClipboardTime = 0;
 let lastClipboardBrowserText = '';
 
 async function handleClipboardDetected(url, allUrls) {
@@ -336,9 +389,11 @@ async function handleClipboardDetected(url, allUrls) {
   const validUrls = Array.from(new Set(candidateUrls.map(u => u.trim()))).filter(u => u.startsWith('http://') || u.startsWith('https://'));
   if (validUrls.length === 0) return;
 
+  const now = Date.now();
   const primaryUrl = validUrls[0];
-  if (primaryUrl === lastProcessedClipboardUrl && validUrls.length === 1) return;
+  if (primaryUrl === lastProcessedClipboardUrl && validUrls.length === 1 && (now - lastProcessedClipboardTime) < 2500) return;
   lastProcessedClipboardUrl = primaryUrl;
+  lastProcessedClipboardTime = now;
 
   // Insert any missing URLs into textarea cleanly separated by newlines
   const currentExtracted = extractUrlsFromText(urlInput.value);
@@ -392,7 +447,7 @@ async function handleClipboardDetected(url, allUrls) {
 
   // JDownloader Behavior: Automatically analyze and place in Detected Media
   try {
-    const res = await fetch(`${API_BASE}/api/analyze`, {
+    const res = await apiFetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ urls: urlsToAnalyze })
@@ -442,7 +497,7 @@ setInterval(async () => {
   if (!clipboardMonitorEnabled) return;
   // 1. Check API_BASE clipboard endpoint
   try {
-    const res = await fetch(`${API_BASE}/api/clipboard`);
+    const res = await apiFetch(`${API_BASE}/api/clipboard`);
     if (res.ok) {
       const data = await res.json();
       if (data.enabled && data.has_url && data.urls && data.urls.length > 0) {
@@ -455,7 +510,7 @@ setInterval(async () => {
   // 2. If running on a cloud mirror (Vercel/GitHub Pages), also query local engine at 127.0.0.1:8765
   if (!API_BASE.includes('127.0.0.1') && !API_BASE.includes('localhost')) {
     try {
-      const localRes = await fetch('http://127.0.0.1:8765/api/clipboard');
+      const localRes = await apiFetch('http://127.0.0.1:8765/api/clipboard');
       if (localRes.ok) {
         const localData = await localRes.json();
         if (localData.enabled && localData.has_url && localData.urls && localData.urls.length > 0) {
@@ -468,7 +523,7 @@ setInterval(async () => {
 
 async function fetchClipboardStatus() {
   try {
-    const res = await fetch(`${API_BASE}/api/clipboard`);
+    const res = await apiFetch(`${API_BASE}/api/clipboard`);
     if (!res.ok) return;
     const data = await res.json();
     setClipboardUI(data.enabled);
@@ -481,7 +536,7 @@ async function toggleClipboardMonitor() {
   clipboardMonitorEnabled = !clipboardMonitorEnabled;
   setClipboardUI(clipboardMonitorEnabled);
   try {
-    await fetch(`${API_BASE}/api/clipboard/toggle`, {
+    await apiFetch(`${API_BASE}/api/clipboard/toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: clipboardMonitorEnabled })
@@ -511,7 +566,7 @@ function setClipboardUI(enabled) {
 // -------------------------------------------------------------
 async function fetchStatus() {
   try {
-    const res = await fetch(`${API_BASE}/api/status`);
+    const res = await apiFetch(`${API_BASE}/api/status`);
     if (!res.ok) throw new Error('Failed to fetch status');
     const data = await res.json();
     isCloudMode = (data.mode === 'cloud_serverless');
@@ -539,7 +594,7 @@ async function fetchStatus() {
     // If local engine is offline and we are visiting a cloud domain, auto-fallback to cloud API
     if (API_BASE.includes('127.0.0.1') && !window.location.origin.includes('127.0.0.1') && !window.location.origin.includes('localhost') && !window.location.hostname.endsWith('github.io')) {
       try {
-        const cloudRes = await fetch(`${window.location.origin}/api/status`);
+        const cloudRes = await apiFetch(`${window.location.origin}/api/status`);
         if (cloudRes.ok) {
           const cloudData = await cloudRes.json();
           API_BASE = window.location.origin;
@@ -556,7 +611,7 @@ async function fetchStatus() {
 
 async function fetchJobs() {
   try {
-    const res = await fetch(`${API_BASE}/api/jobs`);
+    const res = await apiFetch(`${API_BASE}/api/jobs`);
     if (!res.ok) return;
     const data = await res.json();
     if (data.jobs) {
@@ -581,7 +636,7 @@ async function fetchSettings() {
     activeApiBaseLabel.textContent = API_BASE;
   }
   try {
-    const res = await fetch(`${API_BASE}/api/settings`);
+    const res = await apiFetch(`${API_BASE}/api/settings`);
     if (!res.ok) return;
     appSettings = await res.json();
     settingDownloadDir.value = appSettings.download_dir || '';
@@ -613,7 +668,7 @@ async function saveSettings() {
   };
   autoClearCompleted = payload.auto_clear_completed;
   try {
-    const res = await fetch(`${API_BASE}/api/settings`, {
+    const res = await apiFetch(`${API_BASE}/api/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -637,7 +692,7 @@ async function saveSettings() {
 
 async function triggerOpenFolder() {
   try {
-    await fetch(`${API_BASE}/api/open-folder`, { method: 'POST' });
+    await apiFetch(`${API_BASE}/api/open-folder`, { method: 'POST' });
   } catch (err) {
     alert('Error opening folder: ' + err.message);
   }
@@ -645,7 +700,7 @@ async function triggerOpenFolder() {
 
 async function triggerOpenFile(jobId, filePath) {
   try {
-    const res = await fetch(`${API_BASE}/api/open-file`, {
+    const res = await apiFetch(`${API_BASE}/api/open-file`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_id: jobId, path: filePath })
@@ -683,7 +738,7 @@ async function analyzeLinks(autoDownload = false) {
   btn.innerHTML = `<span class="inline-block animate-spin mr-2">&#9696;</span> ${autoDownload ? 'Processing...' : 'Analyzing...'}`;
 
   try {
-    const res = await fetch(`${API_BASE}/api/analyze`, {
+    const res = await apiFetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ urls })
@@ -750,19 +805,27 @@ function renderInspectorCards() {
     const card = document.createElement('div');
     card.className = 'media-card bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
 
+    const safeThumb = sanitizeImageUrl(item.thumbnail);
+    const safeTitle = escapeHtml(item.title || 'Untitled Media');
+    const safeUrl = escapeHtml(item.url || '');
+    const safeUploader = escapeHtml(item.uploader || '');
+    const safePlatform = escapeHtml(item.platform || 'Media');
+    const safeDuration = escapeHtml(item.duration_str || '');
+    const safeError = escapeHtml(item.error_message || 'Cannot download this link.');
+
     let thumbHtml = '';
-    if (item.thumbnail) {
+    if (safeThumb) {
       thumbHtml = `
         <div class="relative w-full md:w-36 h-24 rounded-lg overflow-hidden bg-gray-950 flex-shrink-0 border border-gray-800">
-          <img src="${item.thumbnail}" alt="" class="w-full h-full object-cover">
-          ${item.duration_str ? `<span class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/80 text-[10px] text-white font-mono font-medium">${item.duration_str}</span>` : ''}
+          <img src="${safeThumb}" alt="" class="w-full h-full object-cover">
+          ${safeDuration ? `<span class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/80 text-[10px] text-white font-mono font-medium">${safeDuration}</span>` : ''}
         </div>
       `;
     } else {
       thumbHtml = `
         <div class="w-full md:w-36 h-24 rounded-lg bg-gray-950/80 border border-gray-800 flex flex-col items-center justify-center text-gray-500 flex-shrink-0">
           <i data-lucide="${item.status === 'direct_file' ? 'file' : 'film'}" class="w-8 h-8 text-indigo-400/60 mb-1"></i>
-          <span class="text-[10px] uppercase font-semibold tracking-wider text-gray-400">${item.platform || 'Media'}</span>
+          <span class="text-[10px] uppercase font-semibold tracking-wider text-gray-400">${safePlatform}</span>
         </div>
       `;
     }
@@ -770,8 +833,10 @@ function renderInspectorCards() {
     let controlsHtml = '';
     if (item.status === 'supported' || item.status === 'direct_file') {
       const formatOptionsHtml = (item.formats || []).map(f => {
-        const sizeTag = f.filesize_str ? ` (${f.filesize_str})` : '';
-        return `<option value="${f.format_id}" ${f.format_id === item.selected_format_id ? 'selected' : ''}>${f.label}${sizeTag}</option>`;
+        const sizeTag = f.filesize_str ? ` (${escapeHtml(f.filesize_str)})` : '';
+        const safeLabel = escapeHtml(f.label);
+        const safeFmtId = escapeHtml(f.format_id);
+        return `<option value="${safeFmtId}" ${f.format_id === item.selected_format_id ? 'selected' : ''}>${safeLabel}${sizeTag}</option>`;
       }).join('');
 
       controlsHtml = `
@@ -793,7 +858,7 @@ function renderInspectorCards() {
             <i data-lucide="${isDrm ? 'shield-alert' : 'alert-circle'}" class="w-3.5 h-3.5"></i>
             ${isDrm ? 'DRM Protected Media' : 'Unsupported Content'}
           </div>
-          <p class="text-[11px] opacity-90 mt-0.5">${item.error_message || 'Cannot download this link.'}</p>
+          <p class="text-[11px] opacity-90 mt-0.5">${safeError}</p>
         </div>
       `;
     }
@@ -804,12 +869,12 @@ function renderInspectorCards() {
         <div class="space-y-1 min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-              ${item.platform || 'Web'}
+              ${safePlatform}
             </span>
-            ${item.uploader ? `<span class="text-xs text-gray-400 truncate">${item.uploader}</span>` : ''}
+            ${safeUploader ? `<span class="text-xs text-gray-400 truncate">${safeUploader}</span>` : ''}
           </div>
-          <h4 class="text-sm font-semibold text-white truncate max-w-xl" title="${item.title}">${item.title}</h4>
-          <p class="text-xs text-gray-500 truncate font-mono">${item.url}</p>
+          <h4 class="text-sm font-semibold text-white truncate max-w-xl" title="${safeTitle}">${safeTitle}</h4>
+          <p class="text-xs text-gray-500 truncate font-mono">${safeUrl}</p>
         </div>
       </div>
       <div class="flex items-center gap-2 w-full md:w-auto justify-end">
@@ -832,7 +897,7 @@ async function enqueueDownloadBatch(items) {
     return;
   }
   try {
-    const res = await fetch(`${API_BASE}/api/download`, {
+    const res = await apiFetch(`${API_BASE}/api/download`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items })
@@ -982,11 +1047,19 @@ function renderJobs() {
 }
 
 function createJobCardHtml(job, isHistory) {
+  const safeThumb = sanitizeImageUrl(job.thumbnail);
+  const safeTitle = escapeHtml(job.title || 'Media Download');
+  const safeFilename = escapeHtml(job.filename || '');
+  const safePlatform = escapeHtml(job.platform || 'Web');
+  const safeFormatLabel = escapeHtml(job.format_label || 'Original Quality');
+  const safeError = escapeHtml(job.error_message || '');
+  const safeTargetFilepath = escapeHtml(job.target_filepath || '');
+
   let thumbHtml = '';
-  if (job.thumbnail) {
+  if (safeThumb) {
     thumbHtml = `
       <div class="w-16 h-12 rounded-lg overflow-hidden bg-gray-950 flex-shrink-0 border border-gray-800">
-        <img src="${job.thumbnail}" alt="" class="w-full h-full object-cover">
+        <img src="${safeThumb}" alt="" class="w-full h-full object-cover">
       </div>
     `;
   } else {
@@ -1047,7 +1120,7 @@ function createJobCardHtml(job, isHistory) {
     `;
   } else if (job.status === 'completed') {
     actionsHtml = `
-      <button class="job-open-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs font-medium text-gray-200 transition" data-id="${job.id}" data-path="${job.target_filepath || ''}" title="Open File in Explorer">
+      <button class="job-open-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs font-medium text-gray-200 transition" data-id="${job.id}" data-path="${safeTargetFilepath}" title="Open File in Explorer">
         <i data-lucide="folder-check" class="w-3.5 h-3.5 text-emerald-400"></i>
         <span>Show File</span>
       </button>
@@ -1078,11 +1151,11 @@ function createJobCardHtml(job, isHistory) {
               <span class="job-status-badge px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${statusBadgeClass}">
                 ${statusText}
               </span>
-              <span class="text-xs text-indigo-400/90 font-mono">${job.format_label || 'Original Quality'}</span>
-              <span class="text-[10px] text-gray-500 font-semibold uppercase px-1.5 py-0.2 rounded bg-gray-800">${job.platform || 'Web'}</span>
+              <span class="text-xs text-indigo-400/90 font-mono">${safeFormatLabel}</span>
+              <span class="text-[10px] text-gray-500 font-semibold uppercase px-1.5 py-0.2 rounded bg-gray-800">${safePlatform}</span>
             </div>
-            <h4 class="text-sm font-semibold text-white truncate max-w-xl" title="${job.title}">${job.title}</h4>
-            ${job.filename ? `<p class="text-[11px] text-gray-400 font-mono truncate">${job.filename}</p>` : ''}
+            <h4 class="text-sm font-semibold text-white truncate max-w-xl" title="${safeTitle}">${safeTitle}</h4>
+            ${safeFilename ? `<p class="text-[11px] text-gray-400 font-mono truncate">${safeFilename}</p>` : ''}
           </div>
         </div>
         <div class="flex items-center gap-2 flex-shrink-0">
@@ -1090,9 +1163,9 @@ function createJobCardHtml(job, isHistory) {
         </div>
       </div>
 
-      ${job.error_message ? `
+      ${safeError ? `
         <div class="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-300">
-          ${job.error_message}
+          ${safeError}
         </div>
       ` : ''}
 
@@ -1107,11 +1180,11 @@ function createJobCardHtml(job, isHistory) {
           <div class="flex items-center justify-between text-xs text-gray-400 font-mono">
             <div class="flex items-center space-x-3">
               <span class="job-percent-text text-gray-200 font-semibold">${job.progress_percent || 0}%</span>
-              <span class="job-speed-text text-indigo-300">${job.speed_str || ''}</span>
+              <span class="job-speed-text text-indigo-300">${escapeHtml(job.speed_str || '')}</span>
               ${job.downloaded_bytes ? `<span>${formatBytes(job.downloaded_bytes)} ${job.total_bytes ? '/ ' + formatBytes(job.total_bytes) : ''}</span>` : ''}
             </div>
             <div>
-              <span class="job-eta-text text-gray-500">${job.eta_str ? 'ETA: ' + job.eta_str : ''}</span>
+              <span class="job-eta-text text-gray-500">${job.eta_str ? 'ETA: ' + escapeHtml(job.eta_str) : ''}</span>
             </div>
           </div>
         </div>
@@ -1144,21 +1217,21 @@ jobsList.addEventListener('click', async (e) => {
   const pauseBtn = e.target.closest('.job-pause-btn');
   if (pauseBtn) {
     const jobId = pauseBtn.dataset.id;
-    await fetch(`${API_BASE}/api/jobs/${jobId}/pause`, { method: 'POST' });
+    await apiFetch(`${API_BASE}/api/jobs/${jobId}/pause`, { method: 'POST' });
     return;
   }
 
   const resumeBtn = e.target.closest('.job-resume-btn');
   if (resumeBtn) {
     const jobId = resumeBtn.dataset.id;
-    await fetch(`${API_BASE}/api/jobs/${jobId}/resume`, { method: 'POST' });
+    await apiFetch(`${API_BASE}/api/jobs/${jobId}/resume`, { method: 'POST' });
     return;
   }
 
   const cancelBtn = e.target.closest('.job-cancel-btn');
   if (cancelBtn) {
     const jobId = cancelBtn.dataset.id;
-    await fetch(`${API_BASE}/api/jobs/${jobId}/cancel`, { method: 'POST' });
+    await apiFetch(`${API_BASE}/api/jobs/${jobId}/cancel`, { method: 'POST' });
     return;
   }
 
@@ -1173,7 +1246,7 @@ jobsList.addEventListener('click', async (e) => {
   const removeBtn = e.target.closest('.job-remove-btn');
   if (removeBtn) {
     const jobId = removeBtn.dataset.id;
-    await fetch(`${API_BASE}/api/jobs/${jobId}`, { method: 'DELETE' });
+    await apiFetch(`${API_BASE}/api/jobs/${jobId}`, { method: 'DELETE' });
     jobs.delete(jobId);
     renderJobs();
     return;
@@ -1193,7 +1266,7 @@ historyList.addEventListener('click', async (e) => {
   const retryBtn = e.target.closest('.job-retry-btn');
   if (retryBtn) {
     const jobId = retryBtn.dataset.id;
-    await fetch(`${API_BASE}/api/jobs/${jobId}/retry`, { method: 'POST' });
+    await apiFetch(`${API_BASE}/api/jobs/${jobId}/retry`, { method: 'POST' });
     switchTab('active');
     return;
   }
@@ -1201,7 +1274,7 @@ historyList.addEventListener('click', async (e) => {
   const removeBtn = e.target.closest('.job-remove-btn');
   if (removeBtn) {
     const jobId = removeBtn.dataset.id;
-    await fetch(`${API_BASE}/api/jobs/${jobId}`, { method: 'DELETE' });
+    await apiFetch(`${API_BASE}/api/jobs/${jobId}`, { method: 'DELETE' });
     jobs.delete(jobId);
     renderJobs();
     return;
@@ -1291,7 +1364,7 @@ clearInputBtn.addEventListener('click', () => {
 pasteClipboardBtn.addEventListener('click', async () => {
   // First attempt: fetch directly from local agent's native Windows clipboard reader!
   try {
-    const res = await fetch(`${API_BASE}/api/clipboard`);
+    const res = await apiFetch(`${API_BASE}/api/clipboard`);
     if (res.ok) {
       const data = await res.json();
       if (data.text && data.text.trim()) {
@@ -1324,7 +1397,7 @@ tabHistoryBtn.addEventListener('click', () => switchTab('history'));
 if (clearCompletedBtn) {
   clearCompletedBtn.addEventListener('click', async () => {
     try {
-      await fetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
+      await apiFetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
     } catch (e) {}
     const completedIds = Array.from(jobs.values())
       .filter(j => j.status === 'completed' || j.status === 'cancelled' || j.status === 'error')
@@ -1340,7 +1413,7 @@ if (clearCompletedBtn) {
 if (clearHistoryBtn) {
   clearHistoryBtn.addEventListener('click', async () => {
     try {
-      await fetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
+      await apiFetch(`${API_BASE}/api/history/clear`, { method: 'POST' });
     } catch (e) {}
     for (const [id, j] of jobs.entries()) {
       if (j.status === 'completed' || j.status === 'error' || j.status === 'cancelled') {

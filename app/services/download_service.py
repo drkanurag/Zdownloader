@@ -13,8 +13,10 @@ from app.domain.events import JobProgressEvent, JobCompletedEvent, JobFailedEven
 from app.domain.exceptions import (
     DownloadCancelledException,
     DownloadPausedException,
-    InsufficientDiskSpaceException
+    InsufficientDiskSpaceException,
+    SSRFSecurityException
 )
+from app.core.security import validate_url_security, create_safe_async_client
 from app.dsa.sliding_window import SlidingWindowSpeedEstimator
 from app.dsa.token_bucket import TokenBucketRateLimiter
 from app.core.event_bus import event_bus
@@ -53,6 +55,11 @@ class DownloadService:
         check_paused: Optional[Callable[[], bool]] = None
     ) -> str:
         """Download direct file using chunked HTTP streaming with HTTP Range resume and disk capacity validation."""
+        # Validate SSRF security before network request
+        is_safe, reason = validate_url_security(job.url)
+        if not is_safe:
+            raise SSRFSecurityException(f"SSRF violation: {reason}")
+
         target_dir = job.download_dir
         os.makedirs(target_dir, exist_ok=True)
         speed_estimator = SlidingWindowSpeedEstimator(window_seconds=2.0)
@@ -73,7 +80,7 @@ class DownloadService:
         if existing_bytes > 0:
             headers["Range"] = f"bytes={existing_bytes}-"
 
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0, verify=False) as client:
+        async with create_safe_async_client(timeout=30.0) as client:
             async with client.stream("GET", job.url, headers=headers) as response:
                 if response.status_code == 416 and existing_bytes > 0:
                     if job.total_bytes and existing_bytes >= job.total_bytes:
@@ -229,10 +236,15 @@ class DownloadService:
         check_paused: Optional[Callable[[], bool]] = None
     ) -> str:
         """Run yt-dlp synchronously with hooks, sliding window speed estimation, and disk space validation."""
+        # Validate SSRF security before executing yt-dlp
+        is_safe, reason = validate_url_security(job.url)
+        if not is_safe:
+            raise SSRFSecurityException(f"SSRF violation: {reason}")
+
         target_dir = job.download_dir
         os.makedirs(target_dir, exist_ok=True)
-        if not storage_service.has_sufficient_space():
-            raise InsufficientDiskSpaceException(f"Insufficient disk space in download directory: {storage_service.base_dir}")
+        if not storage_service.has_sufficient_space(target_dir=target_dir):
+            raise InsufficientDiskSpaceException(f"Insufficient disk space in download directory: {target_dir}")
 
         ffmpeg_exe = get_ffmpeg_path()
         speed_estimator = SlidingWindowSpeedEstimator(window_seconds=2.0)
@@ -341,7 +353,6 @@ class DownloadService:
             "windowsfilenames": True,
             "progress_hooks": [ytdlp_progress_hook],
             "postprocessor_hooks": [postprocessor_hook],
-            "nocheckcertificate": True,
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
@@ -373,19 +384,9 @@ class DownloadService:
         elif format_id == "best" or format_id == "bestvideo+bestaudio/best":
             ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
             ydl_opts["merge_output_format"] = "mp4"
-        elif "bestvideo" in format_id:
-            if "[height<=" in format_id:
-                h_match = re.search(r'height<=(\d+)', format_id)
-                if h_match:
-                    h = h_match.group(1)
-                    ydl_opts["format"] = f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}][ext=mp4]/best[height<={h}]/best"
-                else:
-                    ydl_opts["format"] = format_id
-            else:
-                ydl_opts["format"] = f"{format_id}[ext=mp4]+bestaudio[ext=m4a]/{format_id}+bestaudio/{format_id}"
-            ydl_opts["merge_output_format"] = "mp4"
         else:
-            ydl_opts["format"] = f"{format_id}+bestaudio[ext=m4a]/{format_id}+bestaudio/{format_id}"
+            # Server-generated or custom format: use unchanged without corrupting format string
+            ydl_opts["format"] = format_id
             ydl_opts["merge_output_format"] = "mp4"
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

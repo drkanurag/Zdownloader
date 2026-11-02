@@ -1,3 +1,4 @@
+import os
 import unittest
 import httpx
 from app.main import app
@@ -51,17 +52,20 @@ class TestAPIEndpoints(unittest.IsolatedAsyncioTestCase):
 
     async def test_vercel_entrypoint_and_serverless_mode(self):
         # Verify api.index entrypoint exports FastAPI app
-        from api.index import app as vercel_app
-        self.assertEqual(vercel_app.title, "Zdownloader Microservices Engine")
+        try:
+            from api.index import app as vercel_app
+            self.assertEqual(vercel_app.title, "Zdownloader Microservices Engine")
 
-        # Test request handling in serverless mode
-        transport = httpx.ASGITransport(app=vercel_app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            res = await client.get("/api/status")
-            self.assertEqual(res.status_code, 200)
-            data = res.json()
-            self.assertEqual(data["status"], "online")
-            self.assertEqual(data["mode"], "cloud_serverless")
+            # Test request handling in serverless mode
+            transport = httpx.ASGITransport(app=vercel_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                res = await client.get("/api/status")
+                self.assertEqual(res.status_code, 200)
+                data = res.json()
+                self.assertEqual(data["status"], "online")
+                self.assertEqual(data["mode"], "cloud_serverless")
+        finally:
+            os.environ.pop("VERCEL", None)
 
 if __name__ == "__main__":
     unittest.main()

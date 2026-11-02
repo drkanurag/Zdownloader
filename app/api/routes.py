@@ -1,7 +1,7 @@
 import os
 import asyncio
 from typing import Dict, Any, List
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
 
 from app.api.schemas import (
     ApiResponse,
@@ -15,8 +15,11 @@ from app.services.scheduler_service import scheduler_service
 from app.services.storage_service import storage_service
 from app.api.websocket import ws_broadcaster
 from app.utils import get_ffmpeg_path
+from app.core.security import validate_url_security, require_auth_token, verify_token_match
 
 router = APIRouter()
+
+MAX_BATCH_URLS = 25
 
 # -----------------------------------------------------------
 # HEALTH PROBES (Microservices Standards)
@@ -55,6 +58,7 @@ async def get_system_status():
         "agent": "Zdownloader Cloud API" if is_serverless else "Zdownloader High-Performance Engine",
         "version": "2.0.0-microservices",
         "mode": "cloud_serverless" if is_serverless else "local_engine",
+        "auth_required": not is_serverless,
         "ffmpeg_available": ffmpeg_bin is not None,
         "ffmpeg_path": ffmpeg_bin or ("Cloud Serverless" if is_serverless else "Not Installed"),
         "download_dir": scheduler_service.settings.download_dir,
@@ -68,8 +72,8 @@ async def get_system_status():
 async def get_settings():
     return scheduler_service.settings.model_dump()
 
-@router.post("/api/settings", tags=["Settings"])
-@router.post("/settings", tags=["Settings"])
+@router.post("/api/settings", tags=["Settings"], dependencies=[Depends(require_auth_token)])
+@router.post("/settings", tags=["Settings"], dependencies=[Depends(require_auth_token)])
 async def update_settings(req: SettingsUpdateRequest):
     if req.download_dir:
         scheduler_service.settings.download_dir = req.download_dir
@@ -91,6 +95,11 @@ async def analyze_links(req: AnalyzeBatchRequest):
     urls = [u.strip() for u in req.urls if u.strip()]
     if not urls:
         raise HTTPException(status_code=400, detail="No URLs provided")
+    if len(urls) > MAX_BATCH_URLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch limit exceeded: Maximum {MAX_BATCH_URLS} URLs allowed per analysis request."
+        )
 
     tasks = [inspection_service.analyze(u) for u in urls]
     results = await asyncio.gather(*tasks)
@@ -99,11 +108,27 @@ async def analyze_links(req: AnalyzeBatchRequest):
 # -----------------------------------------------------------
 # JOB QUEUE & DOWNLOADS
 # -----------------------------------------------------------
-@router.post("/api/download", tags=["Downloads"])
-@router.post("/download", tags=["Downloads"])
+@router.post("/api/download", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
+@router.post("/download", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
 async def enqueue_downloads(req: EnqueueDownloadsRequest):
+    is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+    if is_serverless:
+        raise HTTPException(
+            status_code=400,
+            detail="Media downloads require the Zdownloader Local Engine on your computer. Start run_zdownloader.bat and access http://127.0.0.1:8765."
+        )
+
     if not req.items:
         raise HTTPException(status_code=400, detail="No items provided to download")
+
+    # SSRF Validation for every enqueued item
+    for item in req.items:
+        is_safe, reason = validate_url_security(item.url)
+        if not is_safe:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Security Policy: URL '{item.url}' is blocked for SSRF prevention ({reason})"
+            )
 
     enqueued_jobs = []
     for item in req.items:
@@ -126,47 +151,48 @@ async def get_jobs():
     jobs = scheduler_service.get_all_jobs()
     return {"jobs": [j.model_dump() for j in jobs]}
 
-@router.post("/api/jobs/{job_id}/pause", tags=["Downloads"])
+@router.post("/api/jobs/{job_id}/pause", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
 async def pause_job(job_id: str):
     success = await scheduler_service.pause_job(job_id)
     if not success:
         raise HTTPException(status_code=404, detail="Job not found or cannot be paused")
     return {"status": "paused", "job_id": job_id}
 
-@router.post("/api/jobs/{job_id}/resume", tags=["Downloads"])
+@router.post("/api/jobs/{job_id}/resume", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
 async def resume_job(job_id: str):
     job = await scheduler_service.resume_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "resumed", "job": job.model_dump()}
 
-@router.post("/api/jobs/{job_id}/cancel", tags=["Downloads"])
+@router.post("/api/jobs/{job_id}/cancel", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
 async def cancel_job(job_id: str):
     success = await scheduler_service.cancel_job(job_id)
     if not success:
         raise HTTPException(status_code=404, detail="Job not found or already completed")
     return {"status": "cancelled", "job_id": job_id}
 
-@router.post("/api/jobs/{job_id}/retry", tags=["Downloads"])
+@router.post("/api/jobs/{job_id}/retry", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
 async def retry_job(job_id: str):
     job = await scheduler_service.retry_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"status": "retried", "job": job.model_dump()}
+    return {"status": "retrying", "job": job.model_dump()}
 
-@router.delete("/api/jobs/{job_id}", tags=["Downloads"])
+@router.delete("/api/jobs/{job_id}", tags=["Downloads"], dependencies=[Depends(require_auth_token)])
 async def delete_job(job_id: str):
-    success = scheduler_service.remove_job(job_id)
+    success = scheduler_service.delete_job(job_id)
     if not success:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "deleted", "job_id": job_id}
 
-@router.post("/api/history/clear", tags=["Downloads"])
-async def clear_history():
-    count = scheduler_service.clear_history()
-    return {"status": "cleared", "count": count}
+@router.get("/api/history", tags=["History"])
+async def get_history():
+    jobs = scheduler_service.get_history()
+    return {"history": [j.model_dump() for j in jobs]}
 
-@router.delete("/api/history", tags=["Downloads"])
+@router.delete("/api/history", tags=["History"], dependencies=[Depends(require_auth_token)])
+@router.post("/api/history/clear", tags=["History"], dependencies=[Depends(require_auth_token)])
 async def delete_history():
     count = scheduler_service.clear_history()
     return {"status": "cleared", "count": count}
@@ -174,12 +200,12 @@ async def delete_history():
 # -----------------------------------------------------------
 # STORAGE INTEGRATION
 # -----------------------------------------------------------
-@router.post("/api/open-folder", tags=["Storage"])
+@router.post("/api/open-folder", tags=["Storage"], dependencies=[Depends(require_auth_token)])
 async def open_download_folder():
     success = storage_service.open_folder()
     return {"success": success, "path": storage_service.base_dir}
 
-@router.post("/api/open-file", tags=["Storage"])
+@router.post("/api/open-file", tags=["Storage"], dependencies=[Depends(require_auth_token)])
 async def open_downloaded_file(payload: Dict[str, Any]):
     path = payload.get("path")
     job_id = payload.get("job_id")
@@ -208,7 +234,7 @@ async def get_disk_usage():
 # -----------------------------------------------------------
 # CLIPBOARD INTEGRATION
 # -----------------------------------------------------------
-@router.get("/api/clipboard", tags=["Clipboard"])
+@router.get("/api/clipboard", tags=["Clipboard"], dependencies=[Depends(require_auth_token)])
 async def get_clipboard_content():
     """Retrieve current text and extracted URLs from native Windows clipboard."""
     from app.services.clipboard_service import clipboard_service
@@ -222,7 +248,7 @@ async def get_clipboard_content():
         "url": urls[0] if urls else None
     }
 
-@router.post("/api/clipboard/toggle", tags=["Clipboard"])
+@router.post("/api/clipboard/toggle", tags=["Clipboard"], dependencies=[Depends(require_auth_token)])
 async def toggle_clipboard_monitoring(payload: Dict[str, Any]):
     """Toggle real-time clipboard monitoring on/off."""
     from app.services.clipboard_service import clipboard_service
@@ -235,6 +261,23 @@ async def toggle_clipboard_monitoring(payload: Dict[str, Any]):
 # -----------------------------------------------------------
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+    if not is_serverless:
+        token = ws.query_params.get("token") or ws.headers.get("x-api-token")
+        origin = ws.headers.get("origin")
+        client_host = ws.client.host if ws.client else ""
+        is_local_client = client_host in ("127.0.0.1", "::1", "localhost")
+        is_local_origin = (
+            origin is None or
+            origin.startswith("http://127.0.0.1:8765") or
+            origin.startswith("http://localhost:8765")
+        )
+
+        if not (is_local_client and is_local_origin):
+            if not verify_token_match(token):
+                await ws.close(code=1008)  # Policy violation / Unauthorized
+                return
+
     await ws_broadcaster.connect(ws)
     try:
         while True:
@@ -245,4 +288,3 @@ async def websocket_endpoint(ws: WebSocket):
         ws_broadcaster.disconnect(ws)
     except Exception:
         ws_broadcaster.disconnect(ws)
-
